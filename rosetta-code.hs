@@ -1,6 +1,6 @@
 import Control.Monad.State.Lazy
 import Data.Char                        -- isAsciiLower, isAsciiUpper, isDigit
-import Data.Text.Lazy (Text)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf
 import System.Environment               -- getArgs
@@ -10,40 +10,51 @@ import System.IO
 
 -- Scanning ------------------------------------------------------------------------------------------------------------
 -- Remaining text, line, column
+-- ScannerState expects a null terminated string, for efficient character handling
 type ScannerState = (Text, Int, Int)
 
-advanceScanner :: Int -> ScannerState -> ScannerState
-advanceScanner 1 (t, l, c)
+scannerAdvance :: Int -> ScannerState -> ScannerState
+scannerAdvance 1 (t, l, c)
     | ch == '\n' = (rest, l + 1, 0)
     | otherwise  = (rest, l, c + 1)
 
     where (ch, rest) = (T.head t, T.tail t)
 
-advanceScanner n (t, l, c) = advanceScanner (n - 1) $ advanceScanner 1
+scannerAdvance n (t, l, c) = scannerAdvance (n - 1) $ scannerAdvance 1
 
 
-peekScanner :: ScannerState -> Char
-peekScanner (t, _, _) = T.head t
+scannerPeek :: ScannerState -> Char
+scannerPeek (t, _, _) = T.head t
 
 
-stripScanner :: ScannerState -> ScannerState
-stripScanner (t, l, c)
-    | ch == ' '  = stripScanner (rest, l, c + 1)
-    | ch == '\n' = stripScanner (rest, l + 1, 0)
+scannerNext :: ScannerState -> (Char, ScannerState)
+scannerNext ctx = (ch, new_ctx)
+    where new_ctx @ (t, _, _) = scannerAdvance 1 ctx
+          ch = T.head t
+
+
+scannerLocation :: ScannerState -> (Int, Int)
+scannerLocation (_, l, c) = (l, c)
+
+
+scannerStrip :: ScannerState -> ScannerState
+scannerStrip (t, l, c)
+    | ch == ' '  = scannerStrip (rest, l, c + 1)
+    | ch == '\n' = scannerStrip (rest, l + 1, 0)
     | otherwise  = (t, l, c)
 
     where (ch, rest) = (T.head t, T.tail t)
 
 
-matchScanner :: String -> ScannerState -> (Bool, ScannerState)
-matchScanner lexeme (t, l, c) =
+scannerMatch :: String -> ScannerState -> (Bool, ScannerState)
+scannerMatch lexeme (t, l, c) =
     case T.stripPrefix (T.pack lexeme) t of
         Nothing -> (False, (t, l, c))
         Just t' -> (True, (t', l, c + (length lexeme)))
 
 
-manyScanner :: (Char -> Bool) -> ScannerState -> (Text, ScannerState)
-manyScanner f (t, l, c) = (str, (t', l, c + T.length str))
+scannerMany :: (Char -> Bool) -> ScannerState -> (Text, ScannerState)
+scannerMany f (t, l, c) = (str, (t', l, c + T.length str))
     where (str, t') = T.span f t
 
 
@@ -52,23 +63,31 @@ type Scanner = State ScannerState
 
 
 advance :: Int -> Scanner ()
-advance n = modify $ advanceScanner n
+advance n = modify $ scannerAdvance n
 
 
 peek :: Scanner Char
-peek = gets peekScanner
+peek = gets scannerPeek
+
+
+next :: Scanner Char
+next = state scannerNext
+
+
+location :: Scanner (Int, Int)
+location = gets scannerLocation
 
 
 skipWhitespace :: Scanner ()
-skipWhitespace = modify stripScanner
+skipWhitespace = modify scannerStrip
 
 
 match :: String -> Scanner Bool
-match lexeme = state $ matchScanner lexeme
+match lexeme = state $ scannerMatch lexeme
 
 
 many :: (Char -> Bool) -> Scanner Text
-many f = state $ manyScanner f
+many f = state $ scannerMany f
 
 
 -- Token ---------------------------------------------------------------------------------------------------------------
@@ -95,7 +114,7 @@ showTokens tokens =
 --          token context
 lexError :: ScannerState -> String -> Scanner Token
 lexError (t, l, c) msg = do
-    (_, l', c') <- get    -- error context
+    (l', c') <- location    -- error context
 
     let code = T.take (c' - c + 1) t
     let error_str = printf "(%2d,%2d): %s" l' c' (T.unpack code)
@@ -115,11 +134,12 @@ isIdEnd ch = isIdStart ch || isDigit ch
 
 makeIdentifier :: Scanner Token
 makeIdentifier = do
-    (text, line, column) <- get
+    (line, column) <- location
+    ch <- peek
     advance 1
 
     back <- many isIdEnd
-    let id = T.cons (T.head text) back
+    let id = T.cons ch back
 
     return Token "Identifier" id line column
 
@@ -133,7 +153,7 @@ makeInteger = do
 
     ch <- peek
 
-    if (isIdStart ch) then
+    if (isIdStart ch || ch == '\0') then
         lexError ctx "Invalid number. Starts like a number, but ends in non-numeric characters."
     else
         return Token "Integer" num line column
@@ -141,40 +161,45 @@ makeInteger = do
 
 makeString :: Scanner Token
 makeString = do
-    ctx @ (_, line, column) <- get
+    ctx <- get
+    ch <- peek
+    return $ build_str ctx (T.pack "") ch
+        where
+            build_str :: ScannerState -> Text -> Char -> Scanner Token
+            build_str ctx s '\n' = lexError ctx $ "End-of-line while scanning string literal." ++
+                                                  " Closing string character not found before end-of-line."
 
-    let build_str s = do
-        (text, _, _) <- get
-        ch <- peek
+            build_str ctx s '\0' = lexError ctx $ "End-of-file while scanning string literal." ++
+                                                  " Closing string character not found."
 
-        if (ch == '"') then do
-            advance 1
-            return $ Token "String" s line column
+            build_str (_, line, column) s '"' = do
+                advance 1
+                return $ Token "String" s line column
 
-        else if (ch == '\n') then
-            lexError ctx $ "End-of-line while scanning string literal." ++
-                           " Closing string character not found before end-of-line."
-
-        else if (text == T.pack "") then
-            lexError ctx $ "End-of-file while scanning string literal. Closing string character not found."
-
-        else do
-            advance 1
-            build_str (T.snoc s ch)
-
-    return $ build_str (T.pack "")
+            build_str ctx s ch = do
+                next_ch <- next
+                build_str ctx (T.snoc s ch) next_ch
 
 
 skipComment :: Scanner Token
 skipComment = do
-    ctx @ (t, l, s) <- get
-    let (c, rest) = T.breakOn (T.pack "*/" t)
+    ctx <- get
+    ch <- peek
+    return $ loop ctx ch
+        where
+            loop :: ScannerState -> Char -> Scanner Token
+            loop ctx '\0' = lexError ctx $ "End-of-file in comment. Closing comment characters not found."
 
-    if (T.length rest == 0) then
-        lexError ctx $ "End-of-file in comment. Closing comment characters not found."
-    else
-        advance $ T.length c
-        getToken
+            loop ctx '*' = do
+                next_ch <- next
+
+                if (next_ch == '/')
+                    then return getToken
+                    else loop ctx next_ch
+
+            loop ctx ch = do
+                next_ch <- next
+                loop ctx next_ch
 
 
 -- Bespoke monadic choice
@@ -200,7 +225,7 @@ getToken = do
     else if (T.isPrefixOf "putc"  text) then do advance 4; return $ Token "Keyword_putc"  None line column
 
     -- End of Input
-    else if (match "") then return Token "EOF" None line column
+    else if (match "\0") then return Token "EOF" None line column
 
     -- Patterns
     else if (isIdStart $ ch) then makeIdentifier
@@ -264,17 +289,19 @@ getIOHandles [infile, outfile] = do
     return (inhandle, outhandle)
 
 
-parseTokens :: Handle -> Handle -> IO ()
-parseTokens in_handle out_handle = do
+parseAsTokens :: Handle -> Handle -> IO ()
+parseAsTokens in_handle out_handle = do
     contents <- hGetContents in_handle
-    hPutStr out_handle $ showTokens (tokenize contents)
+    let contents = contents ++ "\0"
+
+    hPutStr out_handle $ showTokens $ tokenize contents
 
 
 main = do
     args <- getArgs
     (in_handle, out_handle) <- getIOHandles args
 
-    parseTokens in_handle out_handle
+    parseAsTokens in_handle out_handle
 
     hClose in_handle
     hClose out_handle
