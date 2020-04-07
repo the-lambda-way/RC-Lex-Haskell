@@ -1,5 +1,7 @@
-import Control.Applicative ((<|>))
+import Control.Applicative hiding (many)
+import Control.Monad.Identity
 import Control.Monad.State.Lazy
+import Control.Monad.Trans.Maybe
 import Data.Char    -- isAsciiLower, isAsciiUpper, isDigit, ord
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -29,8 +31,8 @@ scannerPeek (t, _, _) = T.head t
 
 
 scannerNext :: ScannerState -> (Char, ScannerState)
-scannerNext ctx = (ch, new_ctx)
-    where new_ctx @ (t, _, _) = scannerAdvance 1 ctx
+scannerNext ctx = (ch, ctx')
+    where ctx' @ (t, _, _) = scannerAdvance 1 ctx
           ch = T.head t
 
 
@@ -63,6 +65,16 @@ scannerMany f (t, l, c) = (str, (t', l, c + T.length str))
     where (str, t') = T.span f t
 
 
+scannerStopBefore :: [Char] -> ScannerState -> ((Text, Char), ScannerState)
+scannerStopBefore chars ctx @ (t, _, _) = until wrong build_text ((T.empty, T.head t), ctx)
+    where wrong ((_, ch), _) = ch `elem` chars
+
+          build_text ((text, ch), ctx) = ((text', ch'), ctx')
+              where text' = T.snoc text ch
+                    (ch', ctx') = scannerNext ctx
+
+
+
 -- Stateful Scanning ---------------------------------------------------------------------------------------------------
 type Scanner = State ScannerState
 
@@ -89,6 +101,9 @@ startsWith f = state $ scannerStartsWith f
 
 many :: (Char -> Bool) -> Scanner Text
 many f = state $ scannerMany f
+
+stopBefore :: [Char] -> Scanner (Text, Char)
+stopBefore chars = state $ scannerStopBefore chars
 
 
 -- Token ---------------------------------------------------------------------------------------------------------------
@@ -137,8 +152,17 @@ simpleToken str name = do
         else return Nothing
 
 
-
 -- Bespoke monadic choice
+
+-- StateT Identity monad is not an instance of Alternative, so for simplicity I redefine it here for Scanner Maybe
+-- instance Alternative (StateT ScannerState Identity a) where
+--     empty = StateT $ \ctx -> (Nothing, ctx)
+--     StateT s Identity Nothing <|> r = r
+--     l <|> _ = l
+
+-- instance MonadPlus (Scanner (Maybe Token))
+
+
 ifM :: Scanner Bool -> Scanner Token -> ScannerState -> (Maybe Token, ScannerState)
 ifM ma mb ctx =
     if cond then (Just token, ctxB)
@@ -172,20 +196,28 @@ makeIdentifier = do
 
     return $ Token "Identifier" id line column
 
+-- makeIdentifier = do
+--     (line, column) <- location
+
+--     next
+--     many isIdEnd
+--     id <- lexeme
+
+--     return $ Token "Identifier" (TextValue id) line column
+
 
 makeInteger :: Scanner Token
 makeInteger = do
     ctx @ (_, line, column) <- get
 
     int_str <- many isDigit
-    let num = IntValue (read (T.unpack int_str) :: Int)
-
     ch <- peek
 
     if (isIdStart ch) then
         lexError ctx "Invalid number. Starts like a number, but ends in non-numeric characters."
-    else
-        return $ Token "Integer" num line column
+    else do
+        let num = read (T.unpack int_str) :: Int
+        return $ Token "Integer" (IntValue num) line column
 
 
 makeCharacter :: Scanner Token
@@ -220,24 +252,14 @@ makeCharacter = do
 
 makeString :: Scanner Token
 makeString = do
-    ctx <- get
-    ch <- peek
-    build_str ctx (T.pack "") ch
-        where
-            build_str :: ScannerState -> Text -> Char -> Scanner Token
-            build_str ctx s '\n' = lexError ctx $ "End-of-line while scanning string literal." ++
-                                                  " Closing string character not found before end-of-line."
+    ctx @ (_, line, column) <- get
+    (lexeme, last) <- stopBefore ['"', '\n', '\0']
 
-            build_str ctx s '\0' = lexError ctx $ "End-of-file while scanning string literal." ++
-                                                  " Closing string character not found."
-
-            build_str (_, line, column) s '"' = do
-                next
-                return $ Token "String" (TextValue s) line column
-
-            build_str ctx s ch = do
-                next_ch <- next
-                build_str ctx (T.snoc s ch) next_ch
+    case last of
+        '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
+                               " Closing string character not found before end-of-line."
+        '\0' -> lexError ctx $ "End-of-file while scanning string literal. Closing string character not found."
+        '"'  -> do next; return $ Token "String" (TextValue lexeme) line column
 
 
 skipComment :: Scanner Token
@@ -252,13 +274,10 @@ skipComment = do
               loop ctx '*' = do
                   next_ch <- next
 
-                  if (next_ch == '/')
-                      then nextToken
-                      else loop ctx next_ch
+                  if (next_ch == '/') then nextToken
+                  else                     loop ctx next_ch
 
-              loop ctx ch = do
-                  next_ch <- next
-                  loop ctx next_ch
+              loop ctx _ = next >>= loop ctx
 
 
 nextToken :: Scanner Token
@@ -266,15 +285,16 @@ nextToken = do
     skipWhitespace
 
     maybe_token <- id
+        -- this might be better with all ==>, if the left also binds its character
+        -- then ==> is an alternative to >>=
+
+
         -- Keywords
          $  simpleToken "if"    "Keyword_if"
         <|> simpleToken "else"  "Keyword_else"
         <|> simpleToken "while" "Keyword_while"
         <|> simpleToken "print" "Keyword_while"
         <|> simpleToken "putc"  "Keyword_putc"
-
-        -- End of Input
-        <|> simpleToken "\0" "EOF"
 
         -- Patterns
         <|> startsWith isIdStart ==> makeIdentifier
@@ -308,6 +328,9 @@ nextToken = do
         <|> simpleToken ";" "SemiColon"
         <|> simpleToken "," "Comma"
 
+        -- End of Input
+        <|> simpleToken "\0" "EOF"
+
     case maybe_token of
         Nothing    -> (get >>= \ctx -> lexError ctx "Unrecognized character.")
         Just token -> return token
@@ -328,7 +351,7 @@ nextToken = do
     -- else if (isIdStart ch) then makeIdentifier
     -- else if (isDigit ch)   then makeInteger
     -- else if (lit "\"")     then makeString
-    -- else if (lit "/*")     then skipComment
+    -- else if (lit "/*")     then advanceComment
 
     -- -- Operators
     -- else if (lit "*" ) then return $ Token "Op_multiply"     None line column
