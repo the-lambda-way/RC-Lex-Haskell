@@ -107,7 +107,7 @@ stopBefore chars = state $ scannerStopBefore chars
 
 
 -- Token ---------------------------------------------------------------------------------------------------------------
-data TokenValue = IntValue Int | TextValue Text | None deriving (Show)
+data TokenValue = IntValue Int | TextValue Text | None
 
 data Token = Token { tokenName   :: String,
                      tokenValue  :: TokenValue,
@@ -115,17 +115,21 @@ data Token = Token { tokenName   :: String,
                      tokenColumn :: Int }
 
 
+instance Show TokenValue where
+    show (IntValue  v) = show v
+    show (TextValue v) = T.unpack v
+    show None          = ""
+
+
 showToken :: Token -> String
 showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (tokenName t) (show $ tokenValue t)
--- showToken t = "test\n"
 
 
 showTokens :: [Token] -> String
 showTokens tokens =
     "Location     Token Name         Value\n" ++
     "-------------------------------------\n" ++
-    -- (concat (map showToken tokens))
-    (showToken $ head tokens)
+    (concatMap showToken tokens)
 
 
 --          token context
@@ -134,11 +138,11 @@ lexError (t, l, c) msg = do
     (l', c') <- location    -- error context
 
     let code = T.unpack $ T.take (c' - c + 1) t
-    let error_str = printf "(%2d,%2d): %s" l' c' code
+    let error_str = printf "(%d, %d): %s" l' c' code
 
     next
 
-    let str = T.pack $ msg ++ "\n" ++ (replicate 13 ' ') ++ error_str
+    let str = T.pack $ msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
     return $ Token "Error" (TextValue str) l c
 
 
@@ -233,7 +237,7 @@ makeCharacter = do
                   advance 2
                   lexError ctx $ printf "Unknown escape sequence \\%c" ch
 
-              parse_char ctx ('\'' : _) = lexError ctx "gettok: empty character constant"
+              parse_char ctx ('\'' : _) = lexError ctx "Empty character constant"
 
               parse_char ctx _ = do
                   advance 2
@@ -242,14 +246,27 @@ makeCharacter = do
 
 makeString :: Scanner Token
 makeString = do
-    ctx @ (_, line, column) <- get
-    (lexeme, last) <- stopBefore ['"', '\n', '\0']
+    ctx <- get
 
-    case last of
-        '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
-                               " Closing string character not found before end-of-line."
-        '\0' -> lexError ctx $ "End-of-file while scanning string literal. Closing string character not found."
-        '"'  -> do next; return $ Token "String" (TextValue lexeme) line column
+    -- This would be cleaner modelled after makeCharacter
+
+    build_str ctx (T.pack "")
+        where build_str :: ScannerState -> Text -> Scanner Token
+              build_str ctx t = do
+                  (lexeme, last) <- stopBefore ['\\', '"', '\n', '\0']
+
+                  case last of
+                      '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
+                                             " Closing string character not found before end-of-line."
+                      '\0' -> lexError ctx $ "End-of-file while scanning string literal. Closing string character not found."
+                      '"'  -> do next; return $ Token "String" (TextValue lexeme) line column
+                      '\\' -> do
+                          ch <- next
+
+                          case ch of
+                              'n'  -> do next; return $ build_str (T.snoc lexeme '\n')
+                              '\\' -> do next; return $ build_str (T.append lexeme "\\\\")
+                              _    -> lexError ctx $ printf "Unknown escape sequence \\%c" ch
 
 
 skipComment :: Scanner Token
@@ -274,55 +291,51 @@ nextToken :: Scanner Token
 nextToken = do
     skipWhitespace
 
-    maybe_token <- runMaybeT $ simpleToken "if" "Keyword_if"
+    maybe_token <- runMaybeT
         -- Keywords
-        --  $  simpleToken "if"    "Keyword_if"
-        -- <|> simpleToken "else"  "Keyword_else"
-        -- <|> simpleToken "while" "Keyword_while"
-        -- <|> simpleToken "print" "Keyword_while"
-        -- <|> simpleToken "putc"  "Keyword_putc"
+         $  simpleToken "if"    "Keyword_if"
+        <|> simpleToken "else"  "Keyword_else"
+        <|> simpleToken "while" "Keyword_while"
+        <|> simpleToken "print" "Keyword_while"
+        <|> simpleToken "putc"  "Keyword_putc"
 
-        -- -- Patterns
-        -- <|> startsWith isIdStart ==> makeIdentifier
-        -- <|> startsWith isDigit   ==> makeInteger
-        -- <|> lit "'"              ==> makeCharacter
-        -- <|> lit "\""             ==> makeString
-        -- <|> lit "/*"             ==> skipComment
+        -- Patterns
+        <|> startsWith isIdStart ==> makeIdentifier
+        <|> startsWith isDigit   ==> makeInteger
+        <|> lit "'"              ==> makeCharacter
+        <|> lit "\""             ==> makeString
+        <|> lit "/*"             ==> skipComment
 
-        -- -- Operators
-        -- <|> simpleToken "*"  "Op_multiply"
-        -- <|> simpleToken "/"  "Op_divide"
-        -- <|> simpleToken "%"  "Op_mod"
-        -- <|> simpleToken "+"  "Op_add"
-        -- <|> simpleToken "-"  "Op_subtract"
-        -- <|> simpleToken "<=" "Op_lessequal"
-        -- <|> simpleToken "<"  "Op_less"
-        -- <|> simpleToken ">=" "Op_greaterequal"
-        -- <|> simpleToken ">"  "Op_greater"
-        -- <|> simpleToken "==" "Op_equal"
-        -- <|> simpleToken "!=" "Op_notequal"
-        -- <|> simpleToken "!"  "Op_not"
-        -- <|> simpleToken "="  "Op_assign"
-        -- <|> simpleToken "&&" "Op_and"
-        -- <|> simpleToken "||" "Op_or"
+        -- Operators
+        <|> simpleToken "*"  "Op_multiply"
+        <|> simpleToken "/"  "Op_divide"
+        <|> simpleToken "%"  "Op_mod"
+        <|> simpleToken "+"  "Op_add"
+        <|> simpleToken "-"  "Op_subtract"
+        <|> simpleToken "<=" "Op_lessequal"
+        <|> simpleToken "<"  "Op_less"
+        <|> simpleToken ">=" "Op_greaterequal"
+        <|> simpleToken ">"  "Op_greater"
+        <|> simpleToken "==" "Op_equal"
+        <|> simpleToken "!=" "Op_notequal"
+        <|> simpleToken "!"  "Op_not"
+        <|> simpleToken "="  "Op_assign"
+        <|> simpleToken "&&" "Op_and"
+        <|> simpleToken "||" "Op_or"
 
-        -- -- Symbols
-        -- <|> simpleToken "(" "LeftParen"
-        -- <|> simpleToken ")" "RightParen"
-        -- <|> simpleToken "{" "LeftBrace"
-        -- <|> simpleToken "}" "RightBrace"
-        -- <|> simpleToken ";" "SemiColon"
-        -- <|> simpleToken "," "Comma"
+        -- Symbols
+        <|> simpleToken "(" "LeftParen"
+        <|> simpleToken ")" "RightParen"
+        <|> simpleToken "{" "LeftBrace"
+        <|> simpleToken "}" "RightBrace"
+        <|> simpleToken ";" "SemiColon"
+        <|> simpleToken "," "Comma"
 
-        -- -- End of Input
-        -- <|> simpleToken "\0" "EOF"
-
-        -- in case maybe_token of
-        --     Nothing    -> (get >>= \ctx -> lexError ctx "Unrecognized character.")
-        --     Just token -> return token
+        -- End of Input
+        <|> simpleToken "\0" "EOF"
 
     case maybe_token of
-        Nothing    -> do ctx <- get; lexError ctx "Unrecognized character."
+        Nothing    -> get >>= \ctx -> lexError ctx "Unrecognized character."
         Just token -> return token
 
 
@@ -372,19 +385,17 @@ nextToken = do
     -- else lexError ctx "Unrecognized character."
 
 
-getTokens :: ScannerState -> Int -> [Token]
-getTokens s n
-    | n == 0      = []
+getTokens :: ScannerState -> [Token]
+getTokens s
     | T.null text = []
-    | otherwise   = t : getTokens s' (n - 1)
+    | otherwise   = t : getTokens s'
 
     where (t, s') = runState nextToken s
           (text, _, _) = s'
--- getTokens s n = [t] where (t, s') = runState nextToken s
 
 
 tokenize :: String -> [Token]
-tokenize s = getTokens (T.pack s, 0, 0) 3
+tokenize s = getTokens (T.pack s, 0, 0)
 
 
 
