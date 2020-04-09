@@ -75,7 +75,7 @@ scannerStopBefore chars ctx @ (t, _, _) = until wrong build_text ((T.empty, T.he
 
 
 
--- Stateful Scanning ---------------------------------------------------------------------------------------------------
+-- Stateful Interface --------------------------------------------------------------------------------------------------
 type Scanner = State ScannerState
 
 advance :: Int -> Scanner ()
@@ -107,9 +107,7 @@ stopBefore chars = state $ scannerStopBefore chars
 
 
 -- Token ---------------------------------------------------------------------------------------------------------------
-data TokenValue = IntValue Int | TextValue Text | None
-    deriving (Show)
-
+data TokenValue = IntValue Int | TextValue Text | None deriving (Show)
 
 data Token = Token { tokenName   :: String,
                      tokenValue  :: TokenValue,
@@ -119,13 +117,15 @@ data Token = Token { tokenName   :: String,
 
 showToken :: Token -> String
 showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (tokenName t) (show $ tokenValue t)
+-- showToken t = "test\n"
 
 
 showTokens :: [Token] -> String
 showTokens tokens =
     "Location     Token Name         Value\n" ++
     "-------------------------------------\n" ++
-    concatMap showToken tokens
+    -- (concat (map showToken tokens))
+    (showToken $ head tokens)
 
 
 --          token context
@@ -138,12 +138,12 @@ lexError (t, l, c) msg = do
 
     next
 
-    let str = TextValue $ T.pack $ msg ++ "\n" ++ (replicate 13 ' ') ++ error_str
-    return $ Token "Error" str l c
+    let str = T.pack $ msg ++ "\n" ++ (replicate 13 ' ') ++ error_str
+    return $ Token "Error" (TextValue str) l c
 
 
-simpleToken :: String -> String -> Scanner (Maybe Token)
-simpleToken str name = do
+simpleToken :: String -> String -> MaybeT Scanner Token
+simpleToken str name = MaybeT $ do
     (text, line, column) <- get
 
     if (T.isPrefixOf (T.pack str) text)
@@ -153,27 +153,26 @@ simpleToken str name = do
 
 
 -- Bespoke monadic choice
+-- ifM :: Scanner Bool -> Scanner Token -> ScannerState -> Maybe (Token, ScannerState)
+-- ifM ma mb ctx =
+--     if cond then Just (token, ctxB)
+--     else         Nothing
 
--- StateT Identity monad is not an instance of Alternative, so for simplicity I redefine it here for Scanner Maybe
--- instance Alternative (StateT ScannerState Identity a) where
---     empty = StateT $ \ctx -> (Nothing, ctx)
---     StateT s Identity Nothing <|> r = r
---     l <|> _ = l
-
--- instance MonadPlus (Scanner (Maybe Token))
-
-
-ifM :: Scanner Bool -> Scanner Token -> ScannerState -> (Maybe Token, ScannerState)
-ifM ma mb ctx =
-    if cond then (Just token, ctxB)
-    else         (Nothing, ctxA)
-
-    where (cond, ctxA)  = runState ma ctx
-          (token, ctxB) = runState mb ctxA
+--     where (cond, ctxA)  = runState ma ctx
+--           (token, ctxB) = runState mb ctxA
 
 
-(==>) :: Scanner Bool -> Scanner Token -> Scanner (Maybe Token)
-ma ==> mb = state $ ifM ma mb
+(==>) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
+ma ==> mb = MaybeT $ do
+    ctx <- get
+    let (cond, ctxA) = runState ma ctx
+
+    if (cond) then do
+        let (token, ctxB) = runState mb ctxA
+        put ctxB
+        return $ Just token
+
+    else return Nothing
 
 
 -- Tokenizing ----------------------------------------------------------------------------------------------------------
@@ -192,18 +191,9 @@ makeIdentifier = do
     next
 
     back <- many isIdEnd
-    let id = TextValue $ T.cons ch back
+    let id = T.cons ch back
 
-    return $ Token "Identifier" id line column
-
--- makeIdentifier = do
---     (line, column) <- location
-
---     next
---     many isIdEnd
---     id <- lexeme
-
---     return $ Token "Identifier" (TextValue id) line column
+    return $ Token "Identifier" (TextValue id) line column
 
 
 makeInteger :: Scanner Token
@@ -211,9 +201,9 @@ makeInteger = do
     ctx @ (_, line, column) <- get
 
     int_str <- many isDigit
-    ch <- peek
+    next_ch <- peek
 
-    if (isIdStart ch) then
+    if (isIdStart next_ch) then
         lexError ctx "Invalid number. Starts like a number, but ends in non-numeric characters."
     else do
         let num = read (T.unpack int_str) :: Int
@@ -284,55 +274,55 @@ nextToken :: Scanner Token
 nextToken = do
     skipWhitespace
 
-    maybe_token <- id
-        -- this might be better with all ==>, if the left also binds its character
-        -- then ==> is an alternative to >>=
-
-
+    maybe_token <- runMaybeT $ simpleToken "if" "Keyword_if"
         -- Keywords
-         $  simpleToken "if"    "Keyword_if"
-        <|> simpleToken "else"  "Keyword_else"
-        <|> simpleToken "while" "Keyword_while"
-        <|> simpleToken "print" "Keyword_while"
-        <|> simpleToken "putc"  "Keyword_putc"
+        --  $  simpleToken "if"    "Keyword_if"
+        -- <|> simpleToken "else"  "Keyword_else"
+        -- <|> simpleToken "while" "Keyword_while"
+        -- <|> simpleToken "print" "Keyword_while"
+        -- <|> simpleToken "putc"  "Keyword_putc"
 
-        -- Patterns
-        <|> startsWith isIdStart ==> makeIdentifier
-        <|> startsWith isDigit   ==> makeInteger
-        <|> lit "'"              ==> makeCharacter
-        <|> lit "\""             ==> makeString
-        <|> lit "/*"             ==> skipComment
+        -- -- Patterns
+        -- <|> startsWith isIdStart ==> makeIdentifier
+        -- <|> startsWith isDigit   ==> makeInteger
+        -- <|> lit "'"              ==> makeCharacter
+        -- <|> lit "\""             ==> makeString
+        -- <|> lit "/*"             ==> skipComment
 
-        -- Operators
-        <|> simpleToken "*"  "Op_multiply"
-        <|> simpleToken "/"  "Op_divide"
-        <|> simpleToken "%"  "Op_mod"
-        <|> simpleToken "+"  "Op_add"
-        <|> simpleToken "-"  "Op_subtract"
-        <|> simpleToken "<=" "Op_lessequal"
-        <|> simpleToken "<"  "Op_less"
-        <|> simpleToken ">=" "Op_greaterequal"
-        <|> simpleToken ">"  "Op_greater"
-        <|> simpleToken "==" "Op_equal"
-        <|> simpleToken "!=" "Op_notequal"
-        <|> simpleToken "!"  "Op_not"
-        <|> simpleToken "="  "Op_assign"
-        <|> simpleToken "&&" "Op_and"
-        <|> simpleToken "||" "Op_or"
+        -- -- Operators
+        -- <|> simpleToken "*"  "Op_multiply"
+        -- <|> simpleToken "/"  "Op_divide"
+        -- <|> simpleToken "%"  "Op_mod"
+        -- <|> simpleToken "+"  "Op_add"
+        -- <|> simpleToken "-"  "Op_subtract"
+        -- <|> simpleToken "<=" "Op_lessequal"
+        -- <|> simpleToken "<"  "Op_less"
+        -- <|> simpleToken ">=" "Op_greaterequal"
+        -- <|> simpleToken ">"  "Op_greater"
+        -- <|> simpleToken "==" "Op_equal"
+        -- <|> simpleToken "!=" "Op_notequal"
+        -- <|> simpleToken "!"  "Op_not"
+        -- <|> simpleToken "="  "Op_assign"
+        -- <|> simpleToken "&&" "Op_and"
+        -- <|> simpleToken "||" "Op_or"
 
-        -- Symbols
-        <|> simpleToken "(" "LeftParen"
-        <|> simpleToken ")" "RightParen"
-        <|> simpleToken "{" "LeftBrace"
-        <|> simpleToken "}" "RightBrace"
-        <|> simpleToken ";" "SemiColon"
-        <|> simpleToken "," "Comma"
+        -- -- Symbols
+        -- <|> simpleToken "(" "LeftParen"
+        -- <|> simpleToken ")" "RightParen"
+        -- <|> simpleToken "{" "LeftBrace"
+        -- <|> simpleToken "}" "RightBrace"
+        -- <|> simpleToken ";" "SemiColon"
+        -- <|> simpleToken "," "Comma"
 
-        -- End of Input
-        <|> simpleToken "\0" "EOF"
+        -- -- End of Input
+        -- <|> simpleToken "\0" "EOF"
+
+        -- in case maybe_token of
+        --     Nothing    -> (get >>= \ctx -> lexError ctx "Unrecognized character.")
+        --     Just token -> return token
 
     case maybe_token of
-        Nothing    -> (get >>= \ctx -> lexError ctx "Unrecognized character.")
+        Nothing    -> do ctx <- get; lexError ctx "Unrecognized character."
         Just token -> return token
 
 
@@ -382,16 +372,19 @@ nextToken = do
     -- else lexError ctx "Unrecognized character."
 
 
-getTokens :: ScannerState -> [Token]
-getTokens s
-    | tokenName t == "EOF" = [t]
-    | otherwise            = t : getTokens s'
+getTokens :: ScannerState -> Int -> [Token]
+getTokens s n
+    | n == 0      = []
+    | T.null text = []
+    | otherwise   = t : getTokens s' (n - 1)
 
     where (t, s') = runState nextToken s
+          (text, _, _) = s'
+-- getTokens s n = [t] where (t, s') = runState nextToken s
 
 
 tokenize :: String -> [Token]
-tokenize s = getTokens (T.pack s, 0, 0)
+tokenize s = getTokens (T.pack s, 0, 0) 3
 
 
 
@@ -412,12 +405,9 @@ getIOHandles [infile, outfile] = do
 parseAsTokens :: Handle -> Handle -> IO ()
 parseAsTokens in_handle out_handle = do
     contents <- hGetContents in_handle
-    let contents = contents ++ "\0"
+    let contents' = contents ++ "\0"
 
-    hPutStr out_handle $ showTokens $ tokenize contents
-
-
-
+    hPutStr out_handle $ showTokens (tokenize contents')
 
 
 main = do
