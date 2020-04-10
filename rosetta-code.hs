@@ -332,7 +332,7 @@ nextToken = do
         <|> simpleToken "," "Comma"
 
         -- End of Input
-        <|> simpleToken "\0" "EOF"
+        <|> simpleToken "" "EOF"
 
     case maybe_token of
         Nothing    -> get >>= \ctx -> lexError ctx "Unrecognized character."
@@ -398,7 +398,6 @@ tokenize :: String -> [Token]
 tokenize s = getTokens (T.pack s, 0, 0)
 
 
-
 -- Run -----------------------------------------------------------------------------------------------------------------
 getIOHandles :: [String] -> IO (Handle, Handle)
 getIOHandles [] = return (stdin, stdout)
@@ -413,19 +412,18 @@ getIOHandles [infile, outfile] = do
     return (inhandle, outhandle)
 
 
-parseAsTokens :: Handle -> Handle -> IO ()
-parseAsTokens in_handle out_handle = do
+withHandles :: Handle -> Handle -> (String -> String) -> IO a
+withHandles in_handle out_handle f = do
     contents <- hGetContents in_handle
-    let contents' = contents ++ "\0"
 
-    hPutStr out_handle $ showTokens (tokenize contents')
+    hPutStr out_handle $ f contents
+
+    hClose in_handle
+    hClose out_handle
 
 
 main = do
     args <- getArgs
-    (in_handle, out_handle) <- getIOHandles args
+    (hin, hout) <- getIOHandles args
 
-    parseAsTokens in_handle out_handle
-
-    hClose in_handle
-    hClose out_handle
+    withHandles hin hout $ showTokens . tokenize
