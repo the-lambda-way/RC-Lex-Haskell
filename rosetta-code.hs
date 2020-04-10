@@ -11,7 +11,36 @@ import System.Environment (getArgs)
 import System.IO
 
 
+------------------------------------------------------------------------------------------------------------------------
+-- Machinery
+------------------------------------------------------------------------------------------------------------------------
+
+-- File handling -------------------------------------------------------------------------------------------------------
+getIOHandles :: [String] -> IO (Handle, Handle)
+getIOHandles [] = return (stdin, stdout)
+
+getIOHandles [infile] = do
+    inhandle <- openFile infile ReadMode
+    return (inhandle, stdout)
+
+getIOHandles [infile, outfile] = do
+    inhandle  <- openFile infile ReadMode
+    outhandle <- openFile outfile WriteMode
+    return (inhandle, outhandle)
+
+
+withHandles :: Handle -> Handle -> (String -> String) -> IO a
+withHandles in_handle out_handle f = do
+    contents <- hGetContents in_handle
+
+    hPutStr out_handle $ f contents
+
+    hClose in_handle
+    hClose out_handle
+
+
 -- Scanning ------------------------------------------------------------------------------------------------------------
+
 -- Remaining text, line, column
 -- ScannerState expects a null terminated string, for efficient character handling
 type ScannerState = (Text, Int, Int)
@@ -74,7 +103,6 @@ scannerStopBefore chars ctx @ (t, _, _) = until wrong build_text ((T.empty, T.he
                     (ch', ctx') = scannerNext ctx
 
 
-
 -- Stateful Interface --------------------------------------------------------------------------------------------------
 type Scanner = State ScannerState
 
@@ -105,6 +133,35 @@ many f = state $ scannerMany f
 stopBefore :: [Char] -> Scanner (Text, Char)
 stopBefore chars = state $ scannerStopBefore chars
 
+
+-- Bespoke monadic choice
+-- ifM :: Scanner Bool -> Scanner Token -> ScannerState -> (Maybe Token, ScannerState)
+-- ifM ma mb ctx =
+--     if cond then (Just token, ctxB)
+--     else         (Nothing, ctx)
+
+--     where (cond, ctxA)  = runState ma ctx
+--           (token, ctxB) = runState mb ctxA
+
+
+-- Think about using the above definition and transform with monad functions, like elsewhere
+
+(==>) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
+ma ==> mb = MaybeT $ do
+    ctx <- get
+    let (cond, ctxA) = runState ma ctx
+
+    if (cond) then do
+        let (token, ctxB) = runState mb ctxA
+        put ctxB
+        return $ Just token
+
+    else return Nothing
+
+
+------------------------------------------------------------------------------------------------------------------------
+-- Language
+------------------------------------------------------------------------------------------------------------------------
 
 -- Token ---------------------------------------------------------------------------------------------------------------
 data TokenValue = IntValue Int | TextValue Text | None
@@ -156,30 +213,7 @@ simpleToken str name = MaybeT $ do
         else return Nothing
 
 
--- Bespoke monadic choice
--- ifM :: Scanner Bool -> Scanner Token -> ScannerState -> Maybe (Token, ScannerState)
--- ifM ma mb ctx =
---     if cond then Just (token, ctxB)
---     else         Nothing
-
---     where (cond, ctxA)  = runState ma ctx
---           (token, ctxB) = runState mb ctxA
-
-
-(==>) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
-ma ==> mb = MaybeT $ do
-    ctx <- get
-    let (cond, ctxA) = runState ma ctx
-
-    if (cond) then do
-        let (token, ctxB) = runState mb ctxA
-        put ctxB
-        return $ Just token
-
-    else return Nothing
-
-
--- Tokenizing ----------------------------------------------------------------------------------------------------------
+-- Tokenizer -----------------------------------------------------------------------------------------------------------
 isIdStart :: Char -> Bool
 isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
 
@@ -339,52 +373,6 @@ nextToken = do
         Just token -> return token
 
 
-
-    -- -- Keywords
-    -- if      (lit "if"   ) then do advance 2; return $ Token "Keyword_if"    None line column
-    -- else if (lit "else" ) then do advance 4; return $ Token "Keyword_else"  None line column
-    -- else if (lit "while") then do advance 5; return $ Token "Keyword_while" None line column
-    -- else if (lit "print") then do advance 5; return $ Token "Keyword_print" None line column
-    -- else if (lit "putc" ) then do advance 4; return $ Token "Keyword_putc"  None line column
-
-    -- -- End of Input
-    -- else if (lit "\0") then return Token "EOF" None line column
-
-    -- -- Patterns
-    -- else if (isIdStart ch) then makeIdentifier
-    -- else if (isDigit ch)   then makeInteger
-    -- else if (lit "\"")     then makeString
-    -- else if (lit "/*")     then advanceComment
-
-    -- -- Operators
-    -- else if (lit "*" ) then return $ Token "Op_multiply"     None line column
-    -- else if (lit "/" ) then return $ Token "Op_divide"       None line column
-    -- else if (lit "%" ) then return $ Token "Op_mod"          None line column
-    -- else if (lit "+" ) then return $ Token "Op_add"          None line column
-    -- else if (lit "-" ) then return $ Token "Op_subtract"     None line column
-    -- else if (lit "<=") then return $ Token "Op_lessequal"    None line column
-    -- else if (lit "<" ) then return $ Token "Op_less"         None line column
-    -- else if (lit ">=") then return $ Token "Op_greaterequal" None line column
-    -- else if (lit ">" ) then return $ Token "Op_greater"      None line column
-    -- else if (lit "==") then return $ Token "Op_equal"        None line column
-    -- else if (lit "!=") then return $ Token "Op_notequal"     None line column
-    -- else if (lit "!" ) then return $ Token "Op_not"          None line column
-    -- else if (lit "=" ) then return $ Token "Op_assign"       None line column
-    -- else if (lit "&&") then return $ Token "Op_and"          None line column
-    -- else if (lit "||") then return $ Token "Op_or"           None line column
-
-    -- -- Symbols
-    -- else if (lit "(") then return $ Token "LeftParen"  None line column
-    -- else if (lit ")") then return $ Token "RightParen" None line column
-    -- else if (lit "{") then return $ Token "LeftBrace"  None line column
-    -- else if (lit "}") then return $ Token "RightBrace" None line column
-    -- else if (lit ";") then return $ Token "SemiColon"  None line column
-    -- else if (lit ",") then return $ Token "Comma"      None line column
-
-    -- -- Bad Input
-    -- else lexError ctx "Unrecognized character."
-
-
 getTokens :: ScannerState -> [Token]
 getTokens s
     | T.null text = []
@@ -396,30 +384,6 @@ getTokens s
 
 tokenize :: String -> [Token]
 tokenize s = getTokens (T.pack s, 0, 0)
-
-
--- Run -----------------------------------------------------------------------------------------------------------------
-getIOHandles :: [String] -> IO (Handle, Handle)
-getIOHandles [] = return (stdin, stdout)
-
-getIOHandles [infile] = do
-    inhandle <- openFile infile ReadMode
-    return (inhandle, stdout)
-
-getIOHandles [infile, outfile] = do
-    inhandle  <- openFile infile ReadMode
-    outhandle <- openFile outfile WriteMode
-    return (inhandle, outhandle)
-
-
-withHandles :: Handle -> Handle -> (String -> String) -> IO a
-withHandles in_handle out_handle f = do
-    contents <- hGetContents in_handle
-
-    hPutStr out_handle $ f contents
-
-    hClose in_handle
-    hClose out_handle
 
 
 main = do
