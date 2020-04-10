@@ -103,9 +103,8 @@ many f = state $ scannerMany f
 -- Embedded conditional action
 (?->) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
 ma ?-> mb = MaybeT $ do
-    cond <- ma
-    if (not cond) then return Nothing
-    else               mb >>= return . Just
+    guard <$> ma
+    return Just `ap` mb
 
 
 -- unlike takeWhile and until, this takes the last value once the predicate is true
