@@ -1,9 +1,7 @@
 import Control.Applicative hiding (many)
-import Control.Monad.Identity
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Maybe
-import Data.Char    -- isAsciiLower, isAsciiUpper, isDigit, ord
-import Data.Maybe (fromMaybe)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf
@@ -32,8 +30,9 @@ getIOHandles [infile, outfile] = do
 withHandles :: Handle -> Handle -> (String -> String) -> IO a
 withHandles in_handle out_handle f = do
     contents <- hGetContents in_handle
+    let contents' = contents ++ "\0"    -- adding \0 simplifies treatment of EOF
 
-    hPutStr out_handle $ f contents
+    hPutStr out_handle $ f contents'
 
     hClose in_handle
     hClose out_handle
@@ -145,9 +144,10 @@ stopBefore chars = state $ scannerStopBefore chars
 
 
 -- Think about using the above definition and transform with monad functions, like elsewhere
+-- Might be able to adapt >>= operator
 
-(==>) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
-ma ==> mb = MaybeT $ do
+(?->) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
+ma ?-> mb = MaybeT $ do
     ctx <- get
     let (cond, ctxA) = runState ma ctx
 
@@ -211,6 +211,10 @@ simpleToken str name = MaybeT $ do
         then do advance $ length str
                 return $ Just (Token name None line column)
         else return Nothing
+
+-- simpleToken str name = lit str ?-> do
+--     (line, column) <- location
+--     return $ Token name None line column
 
 
 -- Tokenizer -----------------------------------------------------------------------------------------------------------
@@ -306,7 +310,7 @@ makeString = do
 skipComment :: Scanner Token
 skipComment = do
     ctx <- get
-    ch <- peek
+    ch  <- peek
 
     loop ctx ch
         where loop :: ScannerState -> Char -> Scanner Token
@@ -334,11 +338,11 @@ nextToken = do
         <|> simpleToken "putc"  "Keyword_putc"
 
         -- Patterns
-        <|> startsWith isIdStart ==> makeIdentifier
-        <|> startsWith isDigit   ==> makeInteger
-        <|> lit "'"              ==> makeCharacter
-        <|> lit "\""             ==> makeString
-        <|> lit "/*"             ==> skipComment
+        <|> startsWith isIdStart ?-> makeIdentifier
+        <|> startsWith isDigit   ?-> makeInteger
+        <|> lit "'"              ?-> makeCharacter
+        <|> lit "\""             ?-> makeString
+        <|> lit "/*"             ?-> skipComment
 
         -- Operators
         <|> simpleToken "*"  "Op_multiply"
@@ -366,24 +370,32 @@ nextToken = do
         <|> simpleToken "," "Comma"
 
         -- End of Input
-        <|> simpleToken "" "EOF"
+        <|> simpleToken "\0" "EOF"
 
     case maybe_token of
         Nothing    -> get >>= \ctx -> lexError ctx "Unrecognized character."
         Just token -> return token
 
 
-getTokens :: ScannerState -> [Token]
-getTokens s
-    | T.null text = []
-    | otherwise   = t : getTokens s'
+-- tokenize :: String -> [Token]
+-- tokenize s = getTokens (T.pack s, 0, 0)
+--     where getTokens s
+--               | tokenName t == "EOF" = t
+--               | otherwise            = t : getTokens s'
 
-    where (t, s') = runState nextToken s
-          (text, _, _) = s'
+--               where (t, s') = runState nextToken s
+
+
+runUntilM :: Monad m => (a -> Bool) -> m -> s -> [a]
+runUntilM p m s
+    | p a       = a
+    | otherwise = a : runUntilM s'
+
+    where (a, s') = runState m s
 
 
 tokenize :: String -> [Token]
-tokenize s = getTokens (T.pack s, 0, 0)
+tokenize s = runUntilM ("EOF" == tokenName) nextToken (T.pack s, 0, 0)
 
 
 main = do
