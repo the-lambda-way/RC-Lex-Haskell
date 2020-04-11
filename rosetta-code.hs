@@ -44,6 +44,7 @@ withHandles in_handle out_handle f = do
 type ScannerState = (Text, Int, Int)
 type Scanner = State ScannerState
 
+
 scannerAdvance :: Int -> ScannerState -> ScannerState
 scannerAdvance 0 ctx = ctx
 
@@ -54,6 +55,7 @@ scannerAdvance 1 (t, l, c)
         (ch, rest) = (T.head t, T.tail t)
 
 scannerAdvance n ctx = scannerAdvance (n - 1) $ scannerAdvance 1 ctx
+
 
 advance :: Int -> Scanner ()
 advance n = modify $ scannerAdvance n
@@ -66,7 +68,7 @@ peek = gets $ \(t, _, _) -> T.head t
 next :: Scanner Char
 next = do
     advance 1
-    peek >>= return
+    return =<< peek
 
 
 location :: Scanner (Int, Int)
@@ -76,12 +78,7 @@ location = gets $ \(_, l, c) -> (l, c)
 skipWhitespace :: Scanner ()
 skipWhitespace = do
     ch <- peek
-
-    if (ch `elem` " \n") then do
-        next
-        skipWhitespace
-    else
-        return ()
+    when (ch `elem` " \n") (next >> skipWhitespace)
 
 
 lit :: String -> Scanner Bool
@@ -89,7 +86,7 @@ lit lexeme = gets $ \(t, _, _) -> T.isPrefixOf (T.pack lexeme) t
 
 
 startsWith :: (Char -> Bool) -> Scanner Bool
-startsWith f = peek >>= return . f
+startsWith f = return f `ap` peek
 
 
 scannerMany :: (Char -> Bool) -> ScannerState -> (Text, ScannerState)
@@ -100,20 +97,21 @@ many :: (Char -> Bool) -> Scanner Text
 many f = state $ scannerMany f
 
 
--- Embedded conditional action
 (?->) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
 ma ?-> mb = MaybeT $ do
-    guard <$> ma
-    return Just `ap` mb
+    cond <- ma
+    
+    if (cond) then return Just `ap` mb
+    else           return Nothing
 
 
 -- unlike takeWhile and until, this takes the last value once the predicate is true
--- runUntilM :: Monad m => (a -> Bool) -> StateT s m a -> s -> [a]
-runUntilM p m s
-    | p a       = [a]
-    | otherwise = a : runUntilM p m s'
+runUntilM :: (Token -> Bool) -> Scanner Token -> ScannerState -> [Token]
+runUntilM f m s
+    | f t       = [t]
+    | otherwise = t : runUntilM f m s'
 
-    where (a, s') = runStateT m s
+    where (t, s') = runState m s
 
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -155,7 +153,7 @@ lexError (t, l, c) msg = do
     let code = T.unpack $ T.take (c' - c + 1) t
     let error_str = printf "(%d, %d): %s" l' c' code
 
-    when (ch /= '\0') (advance 1)
+    when (ch /= '\0') $ advance 1
 
     let str = T.pack $ msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
     return $ Token "Error" (TextValue str) l c
@@ -165,10 +163,11 @@ simpleToken :: String -> String -> MaybeT Scanner Token
 simpleToken str name = MaybeT $ do
     (text, line, column) <- get
 
-    if (T.isPrefixOf (T.pack str) text)
-        then do advance $ length str
-                return $ Just (Token name None line column)
-        else return Nothing
+    if (T.isPrefixOf (T.pack str) text) then do
+        advance $ length str
+        return $ Just (Token name None line column)
+    else
+        return Nothing
 
 
 -- Tokenizer -----------------------------------------------------------------------------------------------------------
@@ -253,24 +252,18 @@ makeString = do
 
 skipComment :: Scanner Token
 skipComment = do
-    ctx @ (text, _, _) <- get
-    let front = T.take 2 text
-
-    guard $ front == (T.pack "/*")
-
-
+    ctx <- get
+    advance 2
     ch <- peek
 
     loop ctx ch
-        where loop ctx ch = do
-                  case ch of
-                      '\0' -> lexError ctx $ "End-of-file in comment. Closing comment characters not found."
+        where loop ctx '\0' = lexError ctx $ "End-of-file in comment. Closing comment characters not found."
 
-                      '*' -> do
-                          next_ch <- next
-                          if (next_ch == '/') then nextToken else loop ctx next_ch
+              loop ctx '*' = do
+                  next_ch <- next
+                  if (next_ch == '/') then nextToken else loop ctx next_ch
 
-                      _   -> next >>= loop ctx
+              loop ctx _ = do loop ctx =<< next
 
 
 nextToken :: Scanner Token
