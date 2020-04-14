@@ -100,7 +100,7 @@ many f = state $ scannerMany f
 (?->) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
 ma ?-> mb = MaybeT $ do
     cond <- ma
-    
+
     if (cond) then return Just `ap` mb
     else           return Nothing
 
@@ -261,6 +261,7 @@ skipComment = do
 
               loop ctx '*' = do
                   next_ch <- next
+                  next
                   if (next_ch == '/') then nextToken else loop ctx next_ch
 
               loop ctx _ = do loop ctx =<< next
@@ -275,7 +276,7 @@ nextToken = do
          $  simpleToken "if"    "Keyword_if"
         <|> simpleToken "else"  "Keyword_else"
         <|> simpleToken "while" "Keyword_while"
-        <|> simpleToken "print" "Keyword_while"
+        <|> simpleToken "print" "Keyword_print"
         <|> simpleToken "putc"  "Keyword_putc"
 
         -- Patterns
