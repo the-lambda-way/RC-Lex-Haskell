@@ -50,7 +50,7 @@ scannerAdvance 0 ctx = ctx
 
 scannerAdvance 1 (t, l, c)
     | ch == '\n' = (rest, l + 1, 0)
-    | otherwise  = (rest, l, c + 1)
+    | otherwise  = (rest, l,     c + 1)
     where
         (ch, rest) = (T.head t, T.tail t)
 
@@ -90,8 +90,10 @@ startsWith f = return f `ap` peek
 
 
 scannerMany :: (Char -> Bool) -> ScannerState -> (Text, ScannerState)
-scannerMany f (t, l, c) = (str, (t', l, c + T.length str))
+scannerMany f (t, l, c) = (str, (t', l, c'))
     where (str, t') = T.span f t
+          c' = c + T.length str
+
 
 many :: (Char -> Bool) -> Scanner Text
 many f = state $ scannerMany f
@@ -133,13 +135,17 @@ instance Show TokenValue where
     show None          = ""
 
 
+instance PrintfArg TokenValue where
+    formatArg = formatString . show
+
+
 showToken :: Token -> String
-showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (tokenName t) (show $ tokenValue t)
+showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (tokenName t) (tokenValue t)
 
 
 showTokens :: [Token] -> String
 showTokens tokens =
-    "Location     Token Name         Value\n" ++
+    "Location  Token Name       Value\n" ++
     "-------------------------------------\n" ++
     (concatMap showToken tokens)
 
@@ -208,16 +214,15 @@ makeInteger = do
 makeCharacter :: Scanner Token
 makeCharacter = do
     ctx @ (text, line, column) <- get
-    next
-    let str = T.unpack $ T.take 3 text
+    let str = T.unpack $ T.drop 1 (T.take 4 text)
 
     case str of
-        (ch : '\'' : _)    -> do advance 2; return $ Token "Integer" (IntValue $ ord ch) line column
-        "\\n'"             -> do advance 3; return $ Token "Integer" (IntValue 10) line column
-        "\\\\'"            -> do advance 3; return $ Token "Integer" (IntValue 92) line column
-        ('\\' : ch : "\'") -> do advance 2; lexError ctx $ printf "Unknown escape sequence \\%c" ch
+        (ch : '\'' : _)    -> do advance 3; return $ Token "Integer" (IntValue $ ord ch) line column
+        "\\n'"             -> do advance 4; return $ Token "Integer" (IntValue 10) line column
+        "\\\\'"            -> do advance 4; return $ Token "Integer" (IntValue 92) line column
+        ('\\' : ch : "\'") -> do advance 3; lexError ctx $ printf "Unknown escape sequence \\%c" ch
         ('\'' : _)         -> lexError ctx "Empty character constant"
-        _                  -> do advance 2; lexError ctx "Multi-character constant"
+        _                  -> do advance 3; lexError ctx "Multi-character constant"
 
 
 makeString :: Scanner Token
@@ -254,17 +259,17 @@ skipComment :: Scanner Token
 skipComment = do
     ctx <- get
     advance 2
-    ch <- peek
 
-    loop ctx ch
+    loop ctx =<< peek
         where loop ctx '\0' = lexError ctx $ "End-of-file in comment. Closing comment characters not found."
 
               loop ctx '*' = do
                   next_ch <- next
-                  next
-                  if (next_ch == '/') then nextToken else loop ctx next_ch
 
-              loop ctx _ = do loop ctx =<< next
+                  if (next_ch == '/') then next >> nextToken
+                  else                     loop ctx next_ch
+
+              loop ctx _ = loop ctx =<< next
 
 
 nextToken :: Scanner Token
