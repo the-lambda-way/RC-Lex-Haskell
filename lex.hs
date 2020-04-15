@@ -41,74 +41,78 @@ withHandles in_handle out_handle f = do
 -- Scanning ------------------------------------------------------------------------------------------------------------
 
 -- Remaining text, line, column
-type ScannerState = (Text, Int, Int)
-type Scanner = State ScannerState
+type ParserState = (Text, Int, Int)
+type Parser = State ParserState
 
 
-scannerAdvance :: Int -> ScannerState -> ScannerState
-scannerAdvance 0 ctx = ctx
+parserAdvance :: Int -> ParserState -> ParserState
+parserAdvance 0 ctx = ctx
 
-scannerAdvance 1 (t, l, c)
+parserAdvance 1 (t, l, c)
     | ch == '\n' = (rest, l + 1, 0)
     | otherwise  = (rest, l,     c + 1)
     where
         (ch, rest) = (T.head t, T.tail t)
 
-scannerAdvance n ctx = scannerAdvance (n - 1) $ scannerAdvance 1 ctx
+parserAdvance n ctx = parserAdvance (n - 1) $ parserAdvance 1 ctx
 
 
-advance :: Int -> Scanner ()
-advance n = modify $ scannerAdvance n
+advance :: Int -> Parser ()
+advance n = modify $ parserAdvance n
 
 
-peek :: Scanner Char
+peek :: Parser Char
 peek = gets $ \(t, _, _) -> T.head t
 
 
-next :: Scanner Char
+next :: Parser Char
 next = do
     advance 1
     return =<< peek
 
 
-location :: Scanner (Int, Int)
+location :: Parser (Int, Int)
 location = gets $ \(_, l, c) -> (l, c)
 
 
-skipWhitespace :: Scanner ()
+current :: Parser (Char, Int, Int)
+current = gets $ \(t, l, c) -> (T.head t, l, c)
+
+
+skipWhitespace :: Parser ()
 skipWhitespace = do
     ch <- peek
     when (ch `elem` " \n") (next >> skipWhitespace)
 
 
-lit :: String -> Scanner Bool
+lit :: String -> Parser Bool
 lit lexeme = gets $ \(t, _, _) -> T.isPrefixOf (T.pack lexeme) t
 
 
-startsWith :: (Char -> Bool) -> Scanner Bool
-startsWith f = return f `ap` peek
+startsWith :: (Char -> Bool) -> Parser Bool
+startsWith f = return f <*> peek
 
 
-scannerMany :: (Char -> Bool) -> ScannerState -> (Text, ScannerState)
-scannerMany f (t, l, c) = (str, (t', l, c'))
+parserMany :: (Char -> Bool) -> ParserState -> (Text, ParserState)
+parserMany f (t, l, c) = (str, (t', l, c'))
     where (str, t') = T.span f t
           c' = c + T.length str
 
 
-many :: (Char -> Bool) -> Scanner Text
-many f = state $ scannerMany f
+many :: (Char -> Bool) -> Parser Text
+many f = state $ parserMany f
 
 
-(?->) :: Scanner Bool -> Scanner Token -> MaybeT Scanner Token
+(?->) :: Parser Bool -> Parser Token -> MaybeT Parser Token
 ma ?-> mb = MaybeT $ do
     cond <- ma
 
-    if (cond) then return Just `ap` mb
+    if (cond) then return Just <*> mb
     else           return Nothing
 
 
 -- unlike takeWhile and until, this takes the last value once the predicate is true
-runUntilM :: (Token -> Bool) -> Scanner Token -> ScannerState -> [Token]
+runUntilM :: (Token -> Bool) -> Parser Token -> ParserState -> [Token]
 runUntilM f m s
     | f t       = [t]
     | otherwise = t : runUntilM f m s'
@@ -151,21 +155,20 @@ showTokens tokens =
 
 
 --          token context
-lexError :: ScannerState -> String -> Scanner Token
+lexError :: ParserState -> String -> Parser Token
 lexError (t, l, c) msg = do
-    (l', c') <- location    -- error context
-    ch <- peek
+    (ch, l', c') <- current    -- error context
 
     let code = T.unpack $ T.take (c' - c + 1) t
     let error_str = printf "(%d, %d): %s" l' c' code
 
-    when (ch /= '\0') $ advance 1
+    unless (ch == '\0') $ advance 1
 
     let str = T.pack $ msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
     return $ Token "Error" (TextValue str) l c
 
 
-simpleToken :: String -> String -> MaybeT Scanner Token
+simpleToken :: String -> String -> MaybeT Parser Token
 simpleToken str name = MaybeT $ do
     (text, line, column) <- get
 
@@ -185,10 +188,9 @@ isIdEnd :: Char -> Bool
 isIdEnd ch = isIdStart ch || isDigit ch
 
 
-makeIdentifier :: Scanner Token
+makeIdentifier :: Parser Token
 makeIdentifier = do
-    (line, column) <- location
-    front <- peek
+    (front, line, column) <- current
     next
 
     back <- many isIdEnd
@@ -197,7 +199,7 @@ makeIdentifier = do
     return $ Token "Identifier" (TextValue id) line column
 
 
-makeInteger :: Scanner Token
+makeInteger :: Parser Token
 makeInteger = do
     ctx @ (_, line, column) <- get
 
@@ -211,7 +213,7 @@ makeInteger = do
         return $ Token "Integer" (IntValue num) line column
 
 
-makeCharacter :: Scanner Token
+makeCharacter :: Parser Token
 makeCharacter = do
     ctx @ (text, line, column) <- get
     let str = T.unpack $ T.drop 1 (T.take 4 text)
@@ -225,7 +227,7 @@ makeCharacter = do
         _                  -> do advance 3; lexError ctx "Multi-character constant"
 
 
-makeString :: Scanner Token
+makeString :: Parser Token
 makeString = do
     ctx <- get
     next
@@ -255,7 +257,7 @@ makeString = do
                       _    -> do next; build_str ctx (T.snoc t ch)
 
 
-skipComment :: Scanner Token
+skipComment :: Parser Token
 skipComment = do
     ctx <- get
     advance 2
@@ -272,7 +274,7 @@ skipComment = do
               loop ctx _ = loop ctx =<< next
 
 
-nextToken :: Scanner Token
+nextToken :: Parser Token
 nextToken = do
     skipWhitespace
 
