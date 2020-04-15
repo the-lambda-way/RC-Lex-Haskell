@@ -38,7 +38,7 @@ withHandles in_handle out_handle f = do
     hClose out_handle
 
 
--- Scanning ------------------------------------------------------------------------------------------------------------
+-- Parsing -------------------------------------------------------------------------------------------------------------
 
 -- Remaining text, line, column
 type ParserState = (Text, Int, Int)
@@ -103,6 +103,7 @@ many :: (Char -> Bool) -> Parser Text
 many f = state $ parserMany f
 
 
+-- bespoke monadic conditional, helps the use of monadic style in the tokenizer
 (?->) :: Parser Bool -> Parser Token -> MaybeT Parser Token
 ma ?-> mb = MaybeT $ do
     cond <- ma
@@ -111,7 +112,7 @@ ma ?-> mb = MaybeT $ do
     else           return Nothing
 
 
--- unlike takeWhile and until, this takes the last value once the predicate is true
+-- unlike takeWhile and until, this takes the last value once the predicate becomes true
 runUntilM :: (Token -> Bool) -> Parser Token -> ParserState -> [Token]
 runUntilM f m s
     | f t       = [t]
@@ -149,7 +150,7 @@ showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (toke
 
 showTokens :: [Token] -> String
 showTokens tokens =
-    "Location  Token Name       Value\n" ++
+    "Location  Token Name       Value\n"      ++
     "-------------------------------------\n" ++
     (concatMap showToken tokens)
 
@@ -230,31 +231,29 @@ makeCharacter = do
 makeString :: Parser Token
 makeString = do
     ctx <- get
-    next
 
-    build_str ctx (T.pack "")
-        where build_str ctx t = do
-                  let (_, line, column) = ctx
-                  ch <- peek
+    build_str ctx (T.pack "") =<< next
+        where build_str ctx t ch = case ch of
+                  '\\' -> do
+                      next_ch <- next
 
-                  case ch of
-                      '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
-                                             " Closing string character not found before end-of-line."
+                      case next_ch of
+                          'n'  -> build_str ctx (T.snoc t '\n') =<< next
+                          '\\' -> build_str ctx (T.snoc t '\\') =<< next
+                          _    -> lexError ctx $ printf "Unknown escape sequence \\%c" next_ch
 
-                      '\0' -> lexError ctx $ "End-of-file while scanning string literal." ++
-                                             " Closing string character not found."
+                   '"' -> do
+                       let (_, line, column) = ctx
+                       next
+                       return $ Token "String" (TextValue t) line column
 
-                      '\\' -> do
-                           next_ch <- next
+                   '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
+                                          " Closing string character not found before end-of-line."
 
-                           case next_ch of
-                               'n'  -> do next; build_str ctx (T.snoc t '\n')
-                               '\\' -> do next; build_str ctx (T.snoc t '\\')
-                               _    -> lexError ctx $ printf "Unknown escape sequence \\%c" next_ch
+                   '\0' -> lexError ctx $ "End-of-file while scanning string literal." ++
+                                          " Closing string character not found."
 
-                      '"'  -> do next; return $ Token "String" (TextValue t) line column
-
-                      _    -> do next; build_str ctx (T.snoc t ch)
+                   _    -> build_str ctx (T.snoc t ch) =<< next
 
 
 skipComment :: Parser Token
@@ -263,15 +262,16 @@ skipComment = do
     advance 2
 
     loop ctx =<< peek
-        where loop ctx '\0' = lexError ctx $ "End-of-file in comment. Closing comment characters not found."
+        where loop ctx ch = case ch of
+                  '\0' -> lexError ctx $ "End-of-file in comment. Closing comment characters not found."
 
-              loop ctx '*' = do
-                  next_ch <- next
+                  '*'  -> do
+                      next_ch <- next
 
-                  if (next_ch == '/') then next >> nextToken
-                  else                     loop ctx next_ch
+                      if (next_ch == '/') then next >> nextToken
+                      else                     loop ctx next_ch
 
-              loop ctx _ = loop ctx =<< next
+                  _    -> loop ctx =<< next
 
 
 nextToken :: Parser Token
