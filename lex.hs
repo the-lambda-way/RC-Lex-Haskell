@@ -144,15 +144,15 @@ instance PrintfArg TokenValue where
     formatArg = formatString . show
 
 
-showToken :: Token -> String
-showToken t = printf "%2d   %2d   %-17s%s\n" (tokenLine t) (tokenColumn t) (tokenName t) (tokenValue t)
+instance Show Token where
+    show (Token name value line column) = printf "%2d   %2d   %-17s%s\n" line column name value
 
 
 showTokens :: [Token] -> String
 showTokens tokens =
     "Location  Token Name       Value\n"      ++
     "-------------------------------------\n" ++
-    (concatMap showToken tokens)
+    (concatMap show tokens)
 
 
 --          token context
@@ -204,13 +204,13 @@ makeInteger :: Parser Token
 makeInteger = do
     ctx @ (_, line, column) <- get
 
-    int_str <- many isDigit
+    lexeme <- many isDigit
     next_ch <- peek
 
     if (isIdStart next_ch) then
         lexError ctx "Invalid number. Starts like a number, but ends in non-numeric characters."
     else do
-        let num = read (T.unpack int_str) :: Int
+        let num = read (T.unpack lexeme) :: Int
         return $ Token "Integer" (IntValue num) line column
 
 
@@ -242,18 +242,18 @@ makeString = do
                           '\\' -> build_str ctx (T.snoc t '\\') =<< next
                           _    -> lexError ctx $ printf "Unknown escape sequence \\%c" next_ch
 
-                   '"' -> do
-                       let (_, line, column) = ctx
-                       next
-                       return $ Token "String" (TextValue t) line column
+                  '"' -> do
+                      let (_, line, column) = ctx
+                      next
+                      return $ Token "String" (TextValue t) line column
 
-                   '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
-                                          " Closing string character not found before end-of-line."
+                  '\n' -> lexError ctx $ "End-of-line while scanning string literal." ++
+                                         " Closing string character not found before end-of-line."
 
-                   '\0' -> lexError ctx $ "End-of-file while scanning string literal." ++
-                                          " Closing string character not found."
+                  '\0' -> lexError ctx $ "End-of-file while scanning string literal." ++
+                                         " Closing string character not found."
 
-                   _    -> build_str ctx (T.snoc t ch) =<< next
+                  _    -> build_str ctx (T.snoc t ch) =<< next
 
 
 skipComment :: Parser Token
