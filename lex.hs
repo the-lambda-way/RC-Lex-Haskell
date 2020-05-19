@@ -3,26 +3,28 @@ import Control.Applicative hiding (many, some)
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Maybe
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
+import Data.Foldable (asum)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf
 import System.Environment (getArgs)
-import System.IO
+import System.IO hiding (isEOF)
 
 
 -- Tokens --------------------------------------------------------------------------------------------------------------
-data Token = IntToken    Int            -- value
-           | TextToken   String Text    -- name value
-           | SymbolToken String         -- name
+data Val = IntVal    Int            -- value
+         | TextVal   String Text    -- name value
+         | SymbolVal String         -- name
+         | NoVal                    -- skip tokens
+         | LexError  String         -- message
 
 
-instance Show Token where
-    show (IntToken    name value) = printf "%-17s%d\n" "Integer" value
-    show (TextToken   name value) = printf "%-17s%s\n" name (T.unpack value)
-    show (SymbolToken name      ) = printf "%s\n"      name
-
-instance Show LexError where
-    show (LexError msg) = printf "%-17s%s\n" "Error" msg
+instance Show Val where
+    show (IntVal         value) = printf "%-17s%d\n" "Integer" value
+    show (TextVal   name value) = printf "%-17s%s\n" name (T.unpack value)
+    show (SymbolVal name      ) = printf "%s\n"      name
+    show (LexError  msg)        = printf "%-17s%s\n" "Error" msg
 
 
 printTokens :: [Token] -> String
@@ -32,29 +34,15 @@ printTokens tokens =
     (concatMap show tokens)
 
 
---                    token context
-lexError :: String -> LexerState -> Lexer Token
-lexError msg (t, l, c) = do
-    (ch, l', c') <- current    -- error context
-
-    let code = T.unpack $ T.take (c' - c + 1) t
-    let error_str = printf "(%d, %d): %s" l' c' code
-
-    unless (ch == '\0') $ advance 1
-
-    let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
-    throwError $ LexError str l c
-
-
 -- Tokenizer -----------------------------------------------------------------------------------------------------------
-simpleToken :: String -> String -> Lexer Token
-simpleToken lexeme name = lexerSrc $ do
+simpleToken :: String -> String -> Lexer Val
+simpleToken lexeme name = do
     lit lexeme
-    return $ SymbolToken name
+    return $ SymbolVal name
 
 
-makeTokenizers :: Alternative f => [(String, String)] -> f a
-makeTokenizers = afromList $ map (curry simpleToken)
+makeTokenizers :: [(String, String)] -> Lexer Val
+makeTokenizers = asum . map (uncurry simpleToken)
 
 
 keywords = makeTokenizers
@@ -76,88 +64,83 @@ symbols = makeTokenizers
 isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
 isIdEnd ch = isIdStart ch || isDigit ch
 
-identifier :: Lexer Token
-identifier = lexerSrc $ do
+identifier :: Lexer Val
+identifier = do
     first <- some isIdStart
     rest <- many isIdEnd
     let lexeme = T.append first rest
 
-    return $ TextToken "Identifier" lexeme
+    return $ TextVal "Identifier" lexeme
 
-integer :: Lexer Token
-integer = lexerSrc $ do
-    ctx <- get
+
+integer :: Lexer Val
+integer = do
     lexeme <- some isDigit
     next_ch <- peek
 
     if (isIdStart next_ch) then
-        lexError ctx "Invalid number. Starts like a number, but ends in non-numeric characters."
+        return $ LexError "Invalid number. Starts like a number, but ends in non-numeric characters."
     else do
         let num = read (T.unpack lexeme) :: Int
-        return $ IntToken num
+        return $ IntVal num
 
 
-makeCharacter :: Lexer Token
-makeCharacter = lexerSrc $ do
-    ctx <- get
-    char '\''
-
+character :: Lexer Val
+character = do
+    lit "'"
     str <- lookahead 3
 
     case str of
-        (ch : '\'' : _)    -> do advance 2; return $ IntToken (ord ch)
-        "\\n'"             -> do advance 3; return $ IntToken 10
-        "\\\\'"            -> do advance 3; return $ IntToken 92
-        ('\\' : ch : "\'") -> do advance 2; lexError $ printf "Unknown escape sequence \\%c" ch
-        ('\'' : _)         -> lexError "Empty character constant"
-        _                  -> do advance 2; lexError "Multi-character constant"
+        (ch : '\'' : _)    -> do advance 2; return $ IntVal (ord ch)
+        "\\n'"             -> do advance 3; return $ IntVal 10
+        "\\\\'"            -> do advance 3; return $ IntVal 92
+        ('\\' : ch : "\'") -> do advance 2; return $ LexError $ printf "Unknown escape sequence \\%c" ch
+        ('\'' : _)         -> return $ LexError "Empty character constant"
+        _                  -> do advance 2; return $ LexError "Multi-character constant"
 
 
-makeString :: Lexer Token
-makeString = lexerSrc $ do
-    build_str (T.pack "") =<< next
-        where build_str t ch = case ch of
+string :: Lexer Val
+string = do
+    loop (T.pack "") =<< next
+        where loop t ch = case ch of
                   '\\' -> do
                       next_ch <- next
 
                       case next_ch of
-                          'n'  -> build_str (T.snoc t '\n') =<< next
-                          '\\' -> build_str (T.snoc t '\\') =<< next
-                          _    -> lexError $ printf "Unknown escape sequence \\%c" next_ch
+                          'n'  -> loop (T.snoc t '\n') =<< next
+                          '\\' -> loop (T.snoc t '\\') =<< next
+                          _    -> return $ LexError $ printf "Unknown escape sequence \\%c" next_ch
 
-                  '"' -> do
-                      let (_, line, column) = ctx
-                      next
-                      return $ Token "String" (TextValue t)
+                  '"' -> do next; return $ TextVal "String" t
 
-                  '\n' -> lexError $ "End-of-line while scanning string literal." ++
-                                     " Closing string character not found before end-of-line."
+                  '\n' -> return $ LexError $ "End-of-line while scanning string literal." ++
+                                              " Closing string character not found before end-of-line."
 
-                  '\0' -> lexError $ "End-of-file while scanning string literal." ++
-                                     " Closing string character not found."
+                  '\0' -> return $ LexError $ "End-of-file while scanning string literal." ++
+                                              " Closing string character not found."
 
-                  _    -> build_str (T.snoc t ch) =<< next
+                  _    -> loop (T.snoc t ch) =<< next
 
 
-skipComment :: Lexer Token
-skipComment = lexerSrc $ do
-    advance 2
+skipComment :: Lexer Val
+skipComment = do
+    lit "/*"
 
     loop =<< peek
         where loop ch = case ch of
-                  '\0' -> lexError $ "End-of-file in comment. Closing comment characters not found."
+                  '\0' -> return $ LexError "End-of-file in comment. Closing comment characters not found."
 
                   '*'  -> do
                       next_ch <- next
 
-                      if (next_ch == '/') then next >> nextToken
+                      if (next_ch == '/') then next >> return NoVal
                       else                     loop next_ch
 
                   _    -> loop =<< next
 
 
 nextToken :: Lexer Token
-nextToken = do
+nextToken = lexerSrc $ do
     skipWhitespace
 
     maybe_token <- keywords
@@ -170,16 +153,18 @@ nextToken = do
                <|> symbols
                <|> simpleToken "\0" "EOF"
 
-    case maybe_token of
-        Nothing    -> lexerSrc $ lexError "Unrecognized character."
-        Just token -> return token
+    return $ fromMaybe
+        (LexError "Unrecognized character.")
+        maybe_token
+
+
+isEOF :: Token -> Bool
+isEOF (Token (SymbolVal "EOF") _ _) = True
+isEOF _ = False
 
 
 lex :: String -> [Token]
-lex s = runUntil
-    (\t -> tokenName t == "EOF")
-    nextToken
-    (T.pack s, 1, 1)
+lex s = runUntil isEOF nextToken (T.pack s, 1, 1)
 
 
 main = do
@@ -219,22 +204,13 @@ withHandles in_handle out_handle f = do
 
 
 -- Parsing -------------------------------------------------------------------------------------------------------------
+--                 input line column
+type LexerState = (Text, Int, Int)
+type Lexer = StateT LexerState Maybe
+data Token = Token Val Int Int    -- token line column
 
-data SrcLoc     = SrcLoc Int Int       -- line column
-data SrcToken a = SrcToken a SrcLoc    -- token location
-
-data LexError = LexError String    -- message
-
-
-instance Show SourceToken where
-    show (SourceToken token (SrcLoc line column)) = printf "%2d   %2d   %s" line column (show token)
-
-
-data LexerState = LexerState {
-    LexerInput :: Text,
-    LexerLoc   :: SrcLoc}
-
-type Lexer = MaybeT State LexerState
+instance Show Token where
+    show (Token val line column) = printf "%2d   %2d   %s" line column (show val)
 
 
 lexerAdvance :: Int -> LexerState -> LexerState
@@ -251,11 +227,15 @@ lexerAdvance n ctx = lexerAdvance (n - 1) $ lexerAdvance 1 ctx
 
 
 advance :: Int -> Lexer ()
-advance n = modify $ LexerAdvance n
+advance n = modify $ lexerAdvance n
 
 
 peek :: Lexer Char
 peek = gets $ \(t, _, _) -> T.head t
+
+
+lookahead :: Int -> Lexer String
+lookahead n = gets $ \(t, _, _) -> T.unpack $ T.take n t
 
 
 next :: Lexer Char
@@ -289,7 +269,7 @@ startsWith :: (Char -> Bool) -> Lexer Bool
 startsWith f = return . Just f <*> peek
 
 
-one :: (Char -> Bool) -> Lexer Text
+one :: (Char -> Bool) -> Lexer Char
 one f = do
     ch <- peek
     guard $ f ch
@@ -297,36 +277,48 @@ one f = do
     return $ Just ch
 
 
-LexerMany :: (Char -> Bool) -> LexerState -> (Text, LexerState)
-LexerMany f (t, l, c) = (lexeme, (t', l', c'))
+lexerMany :: (Char -> Bool) -> LexerState -> (Text, LexerState)
+lexerMany f (t, l, c) = (lexeme, (t', l', c'))
     where (lexeme, t') = T.span f t
-          (_, l', c') = LexerAdvance (_, l, c) $ T.length lexeme
+          (_, l', c') = lexerAdvance (_, l, c) $ T.length lexeme
 
 
 many :: (Char -> Bool) -> Lexer Text
-many f = state $ LexerMany f
+many f = state $ lexerMany f
 
 
 some :: (Char -> Bool) -> Lexer Text
 some f = do
     first <- one f
     rest <- many f
-    return $ T.append first rest
+    return $ T.cons first rest
 
 
--- bespoke monadic conditional, helps the use of monadic style in the tokenizer
-(?->) :: Lexer Bool -> Lexer Token -> MaybeT Lexer Token
-ma ?-> mb = MaybeT $ do
-    cond <- ma
+lexerSrc :: Lexer Val -> Lexer Token
+lexerSrc lexer = do
+    (t, l, c) <- get
+    val <- lexer
 
-    if (cond) then return Just <*> mb
-    else           return Nothing
+    case val of
+        NoVal -> nextToken
+
+        LexError msg -> do
+            (l', c') <- location
+
+            let code = T.unpack $ T.take (c' - c + 1) t
+            let error_str = printf "(%d, %d): %s" l' c' code
+
+            unless (T.head t == '\0') $ advance 1
+
+            let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
+            return $ Token (LexError str) l c
+
+        otherwise -> return $ Token val l c
 
 
--- unlike takeWhile and until, this takes the last value once the predicate becomes true
 runUntil :: (Token -> Bool) -> Lexer Token -> LexerState -> [Token]
-runUntil f m s
+runUntil f lexer s
     | f t       = [t]
-    | otherwise = t : runUntil f m s'
+    | otherwise = t : runUntil f lexer s'
 
-    where (t, s') = runState m s
+    where (Just t, s') = runStateT lexer s
