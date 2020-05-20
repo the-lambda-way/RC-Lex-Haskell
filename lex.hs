@@ -1,10 +1,10 @@
 import Prelude hiding (lex)
 import Control.Applicative hiding (many, some)
 import Control.Monad.State.Lazy
-import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.Foldable (asum)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, fromJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Printf
@@ -16,7 +16,7 @@ import System.IO hiding (isEOF)
 data Val = IntVal    Int            -- value
          | TextVal   String Text    -- name value
          | SymbolVal String         -- name
-         | NoVal                    -- skip tokens
+         | NoVal                    -- (skip tokens)
          | LexError  String         -- message
 
 
@@ -35,13 +35,13 @@ printTokens tokens =
 
 
 -- Tokenizer -----------------------------------------------------------------------------------------------------------
-simpleToken :: String -> String -> Lexer Val
+simpleToken :: String -> String -> Lexer (Maybe Val)
 simpleToken lexeme name = do
     lit lexeme
-    return $ SymbolVal name
+    return $ Just $ SymbolVal name
 
 
-makeTokenizers :: [(String, String)] -> Lexer Val
+makeTokenizers :: [(String, String)] -> Lexer (Maybe Val)
 makeTokenizers = asum . map (uncurry simpleToken)
 
 
@@ -64,43 +64,45 @@ symbols = makeTokenizers
 isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
 isIdEnd ch = isIdStart ch || isDigit ch
 
-identifier :: Lexer Val
+identifier :: Lexer (Maybe Val)
 identifier = do
     first <- some isIdStart
     rest <- many isIdEnd
     let lexeme = T.append first rest
 
-    return $ TextVal "Identifier" lexeme
+    return $ Just $ TextVal "Identifier" lexeme
 
 
-integer :: Lexer Val
+integer :: Lexer (Maybe Val)
 integer = do
     lexeme <- some isDigit
     next_ch <- peek
 
     if (isIdStart next_ch) then
-        return $ LexError "Invalid number. Starts like a number, but ends in non-numeric characters."
+        return $ Just $ LexError "Invalid number. Starts like a number, but ends in non-numeric characters."
     else do
         let num = read (T.unpack lexeme) :: Int
-        return $ IntVal num
+        return $ Just $ IntVal num
 
 
-character :: Lexer Val
+character :: Lexer (Maybe Val)
 character = do
     lit "'"
     str <- lookahead 3
 
     case str of
-        (ch : '\'' : _)    -> do advance 2; return $ IntVal (ord ch)
-        "\\n'"             -> do advance 3; return $ IntVal 10
-        "\\\\'"            -> do advance 3; return $ IntVal 92
-        ('\\' : ch : "\'") -> do advance 2; return $ LexError $ printf "Unknown escape sequence \\%c" ch
-        ('\'' : _)         -> return $ LexError "Empty character constant"
-        _                  -> do advance 2; return $ LexError "Multi-character constant"
+        (ch : '\'' : _)    -> do advance 2; return $ Just $ IntVal (ord ch)
+        "\\n'"             -> do advance 3; return $ Just $ IntVal 10
+        "\\\\'"            -> do advance 3; return $ Just $ IntVal 92
+        ('\\' : ch : "\'") -> do advance 2; return $ Just $ LexError $ printf "Unknown escape sequence \\%c" ch
+        ('\'' : _)         -> return $ Just $ LexError "Empty character constant"
+        _                  -> do advance 2; return $ Just $ LexError "Multi-character constant"
 
 
-string :: Lexer Val
+string :: Lexer (Maybe Val)
 string = do
+    lit "\""
+
     loop (T.pack "") =<< next
         where loop t ch = case ch of
                   '\\' -> do
@@ -109,31 +111,31 @@ string = do
                       case next_ch of
                           'n'  -> loop (T.snoc t '\n') =<< next
                           '\\' -> loop (T.snoc t '\\') =<< next
-                          _    -> return $ LexError $ printf "Unknown escape sequence \\%c" next_ch
+                          _    -> return $ Just $ LexError $ printf "Unknown escape sequence \\%c" next_ch
 
-                  '"' -> do next; return $ TextVal "String" t
+                  '"' -> do next; return $ Just $ TextVal "String" t
 
-                  '\n' -> return $ LexError $ "End-of-line while scanning string literal." ++
-                                              " Closing string character not found before end-of-line."
+                  '\n' -> return $ Just $ LexError $ "End-of-line while scanning string literal." ++
+                                                     " Closing string character not found before end-of-line."
 
-                  '\0' -> return $ LexError $ "End-of-file while scanning string literal." ++
-                                              " Closing string character not found."
+                  '\0' -> return $ Just $ LexError $ "End-of-file while scanning string literal." ++
+                                                     " Closing string character not found."
 
                   _    -> loop (T.snoc t ch) =<< next
 
 
-skipComment :: Lexer Val
+skipComment :: Lexer (Maybe Val)
 skipComment = do
     lit "/*"
 
     loop =<< peek
         where loop ch = case ch of
-                  '\0' -> return $ LexError "End-of-file in comment. Closing comment characters not found."
+                  '\0' -> return $ Just $ LexError "End-of-file in comment. Closing comment characters not found."
 
                   '*'  -> do
                       next_ch <- next
 
-                      if (next_ch == '/') then next >> return NoVal
+                      if (next_ch == '/') then do next; return $ Just NoVal
                       else                     loop next_ch
 
                   _    -> loop =<< next
@@ -206,7 +208,7 @@ withHandles in_handle out_handle f = do
 -- Parsing -------------------------------------------------------------------------------------------------------------
 --                 input line column
 type LexerState = (Text, Int, Int)
-type Lexer = StateT LexerState Maybe
+type Lexer = MaybeT (State LexerState)
 data Token = Token Val Int Int    -- token line column
 
 instance Show Token where
@@ -266,7 +268,7 @@ lit lexeme = do
 
 
 startsWith :: (Char -> Bool) -> Lexer Bool
-startsWith f = return . Just f <*> peek
+startsWith f = return f <*> peek
 
 
 one :: (Char -> Bool) -> Lexer Char
@@ -274,13 +276,13 @@ one f = do
     ch <- peek
     guard $ f ch
     advance 1
-    return $ Just ch
+    return ch
 
 
 lexerMany :: (Char -> Bool) -> LexerState -> (Text, LexerState)
 lexerMany f (t, l, c) = (lexeme, (t', l', c'))
-    where (lexeme, t') = T.span f t
-          (_, l', c') = lexerAdvance (_, l, c) $ T.length lexeme
+    where (lexeme, _) = T.span f t
+          (t', l', c') = lexerAdvance (T.length lexeme) (t, l, c)
 
 
 many :: (Char -> Bool) -> Lexer Text
@@ -321,4 +323,4 @@ runUntil f lexer s
     | f t       = [t]
     | otherwise = t : runUntil f lexer s'
 
-    where (Just t, s') = runStateT lexer s
+    where (Just t, s') = runState (runMaybeT lexer) s
