@@ -8,7 +8,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Prelude hiding (lex)
 import System.Environment (getArgs)
-import System.IO hiding (isEOF)
+import System.IO
 import Text.Printf
 
 
@@ -34,7 +34,7 @@ printTokens tokens =
     (concatMap show tokens)
 
 
--- Tokenizer -----------------------------------------------------------------------------------------------------------
+-- Tokenizers ----------------------------------------------------------------------------------------------------------
 simpleToken :: String -> String -> Lexer Val
 simpleToken lexeme name = lit lexeme $> SymbolVal name
 
@@ -145,32 +145,23 @@ nextToken :: Lexer Token
 nextToken = lexerSrc $ do
     skipWhitespace
 
-    keywords
+    skipComment
+    <|> keywords
     <|> identifier
     <|> integer
     <|> character
     <|> string
-    <|> skipComment
     <|> operators
     <|> symbols
     <|> simpleToken "\0" "EOF"
     <|> (return $ LexError "Unrecognized character.")
 
 
-isEOF :: Token -> Bool
-isEOF (Token (SymbolVal "EOF") _ _) = True
-isEOF _ = False
-
-
-lex :: String -> [Token]
-lex s = runUntil isEOF nextToken (T.pack s, 1, 1)
-
-
 main = do
     args <- getArgs
     (hin, hout) <- getIOHandles args
 
-    withHandles hin hout $ printTokens . lex
+    withHandles hin hout $ printTokens . (lex nextToken)
 
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -303,9 +294,11 @@ lexerSrc lexer = do
         otherwise -> return $ Token val l c
 
 
-runUntil :: (a -> Bool) -> Lexer a -> LexerState -> [a]
-runUntil f lexer s
-    | f t       = [t]
-    | otherwise = t : runUntil f lexer s'
+lex :: Lexer a -> String -> [a]
+lex lexer str = loop lexer (T.pack str, 1, 1)
+    where loop lexer s
+              | T.null txt = [t]
+              | otherwise  = t : loop lexer s'
 
-    where (Just t, s') = runState (runMaybeT lexer) s
+              where (Just t, s') = runState (runMaybeT lexer) s
+                    (txt, _, _) = s'
