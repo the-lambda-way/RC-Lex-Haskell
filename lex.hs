@@ -16,7 +16,7 @@ import Text.Printf
 data Val = IntVal    Int            -- value
          | TextVal   String Text    -- name value
          | SymbolVal String         -- name
-         | NoVal                    -- (skip tokens)
+         | None                     -- (skip tokens)
          | LexError  String         -- message
 
 
@@ -24,7 +24,7 @@ instance Show Val where
     show (IntVal         value) = printf "%-17s%d\n" "Integer" value
     show (TextVal   name value) = printf "%-17s%s\n" name (T.unpack value)
     show (SymbolVal name      ) = printf "%s\n"      name
-    show (LexError  msg)        = printf "%-17s%s\n" "Error" msg
+    show (LexError  msg       ) = printf "%-17s%s\n" "Error" msg
 
 
 printTokens :: [Token] -> String
@@ -66,9 +66,9 @@ isIdEnd ch = isIdStart ch || isDigit ch
 
 identifier :: Lexer Val
 identifier = do
-    first <- some isIdStart
-    rest <- many isIdEnd
-    let lexeme = T.append first rest
+    front <- one isIdStart
+    back <- many isIdEnd
+    let lexeme = T.cons front back
 
     return $ TextVal "Identifier" lexeme
 
@@ -135,8 +135,9 @@ skipComment = do
                   '*'  -> do
                       next_ch <- next
 
-                      if (next_ch == '/') then do next; return NoVal
-                      else                     loop next_ch
+                      case next_ch of
+                          '/' -> do next; return None
+                          _   -> loop next_ch
 
                   _    -> loop =<< next
 
@@ -251,7 +252,7 @@ one :: (Char -> Bool) -> Lexer Char
 one f = do
     ch <- peek
     guard $ f ch
-    advance 1
+    next
     return ch
 
 
@@ -278,15 +279,16 @@ lexerSrc lexer = do
     val <- lexer
 
     case val of
-        NoVal -> nextToken
+        None -> nextToken
 
         LexError msg -> do
             (_, l', c') <- get
+            ch <- peek
 
             let code = T.unpack $ T.take (c' - c + 1) t
             let error_str = printf "(%d, %d): %s" l' c' code
 
-            unless (T.head t == '\0') $ advance 1
+            unless (ch == '\0') $ advance 1
 
             let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
             return $ Token (LexError str) l c
