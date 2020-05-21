@@ -29,7 +29,7 @@ instance Show Val where
 
 printTokens :: [Token] -> String
 printTokens tokens =
-    "Location  Token Name       Value\n"      ++
+    "Location  Token name       Value\n"      ++
     "-------------------------------------\n" ++
     (concatMap show tokens)
 
