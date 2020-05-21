@@ -194,11 +194,11 @@ withHandles in_handle out_handle f = do
     hClose out_handle
 
 
--- Parsing -------------------------------------------------------------------------------------------------------------
+-- Lexer ---------------------------------------------------------------------------------------------------------------
 --                 input line column
 type LexerState = (Text, Int, Int)
 type Lexer = MaybeT (State LexerState)
-data Token = Token Val Int Int    -- token line column
+data Token = Token Val Int Int    -- value line column
 
 instance Show Token where
     show (Token val line column) = printf "%2d   %2d   %s" line column (show val)
