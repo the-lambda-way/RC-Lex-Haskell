@@ -21,10 +21,11 @@ data Val = IntVal    Int            -- value
 
 
 instance Show Val where
-    show (IntVal         value) = printf "%-17s%d\n" "Integer" value
-    show (TextVal   name value) = printf "%-17s%s\n" name (T.unpack value)
-    show (SymbolVal name      ) = printf "%s\n"      name
-    show (LexError  msg       ) = printf "%-17s%s\n" "Error" msg
+    show (IntVal             value) = printf "%-17s%d\n" "Integer" value
+    show (TextVal   "String" value) = printf "%-17s%s\n" "String" (show $ T.unpack value)    -- show escaped characters
+    show (TextVal   name     value) = printf "%-17s%s\n" name (T.unpack value)
+    show (SymbolVal name          ) = printf "%s\n"      name
+    show (LexError  msg           ) = printf "%-17s%s\n" "Error" msg
 
 
 printTokens :: [Token] -> String
@@ -58,7 +59,7 @@ operators = makeTokenizers
 symbols = makeTokenizers
     [("(", "LeftParen"), (")", "RightParen"),
      ("{", "LeftBrace"), ("}", "RightBrace"),
-     (";", "SemiColon"), (",", "Comma")]
+     (";", "Semicolon"), (",", "Comma")]
 
 
 isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
@@ -143,19 +144,19 @@ skipComment = do
 
 
 nextToken :: Lexer Token
-nextToken = lexerSrc $ do
+nextToken = do
     skipWhitespace
 
-    skipComment
-    <|> keywords
-    <|> identifier
-    <|> integer
-    <|> character
-    <|> string
-    <|> operators
-    <|> symbols
-    <|> simpleToken "\0" "EOF"
-    <|> (return $ LexError "Unrecognized character.")
+    makeToken $ skipComment
+            <|> keywords
+            <|> identifier
+            <|> integer
+            <|> character
+            <|> string
+            <|> operators
+            <|> symbols
+            <|> simpleToken "\0" "End_of_input"
+            <|> (return $ LexError "Unrecognized character.")
 
 
 main = do
@@ -212,7 +213,6 @@ lexerAdvance 1 (t, l, c)
     | otherwise  = (rest, l,     c + 1)
     where
         (ch, rest) = (T.head t, T.tail t)
-
 
 lexerAdvance n ctx = lexerAdvance (n - 1) $ lexerAdvance 1 ctx
 
@@ -273,8 +273,8 @@ some f = do
     return $ T.cons first rest
 
 
-lexerSrc :: Lexer Val -> Lexer Token
-lexerSrc lexer = do
+makeToken :: Lexer Val -> Lexer Token
+makeToken lexer = do
     (t, l, c) <- get
     val <- lexer
 

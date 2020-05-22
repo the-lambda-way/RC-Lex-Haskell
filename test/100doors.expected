@@ -31,4 +31,4 @@ Location  Token name       Value
  5   13   Integer          1
  5   14   Semicolon
  6    1   RightBrace
- 8    1   End_of_input
+ 7    1   End_of_input

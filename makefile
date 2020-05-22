@@ -1,16 +1,18 @@
-IN_FILES=$(wildcard test/*.t)
-OUT_FILES=$(IN_FILES:.t=.out)
+TESTS=$(wildcard test/*.t)
+EXPECTED:=$(TESTS:.t=.expected)
+
+all: lex
+
+.PHONY: test $(EXPECTED) clean
 
 lex: lex.hs
 	ghc lex.hs -o lex
 
-.PHONY: test clean
+test: $(EXPECTED)
 
-test: lex $(OUT_FILES)
-
-%.out: %.t
-	./lex < $^ > $@
-	diff $*.expected $@
+$(EXPECTED): %.expected: %.t lex
+	@echo testing $<
+	@./lex < $< | diff -u --color $@ -
 
 clean:
-	rm *.hi *.o lex test/*.out
+	rm *.hi *.o lex

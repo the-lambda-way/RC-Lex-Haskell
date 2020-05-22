@@ -51,4 +51,4 @@ Location  Token name       Value
 13   10   String           "\n"
 13   14   RightParen
 13   15   Semicolon
-15    1   End_of_input
+14    1   End_of_input
