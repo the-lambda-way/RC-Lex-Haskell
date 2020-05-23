@@ -16,8 +16,10 @@ import Text.Printf
 data Val = IntVal    Int            -- value
          | TextVal   String Text    -- name value
          | SymbolVal String         -- name
-         | None                     -- (skip tokens)
+         | Skip
          | LexError  String         -- message
+
+data Token = Token Val Int Int    -- value line column
 
 
 instance Show Val where
@@ -26,6 +28,9 @@ instance Show Val where
     show (TextVal   name     value) = printf "%-17s%s\n" name (T.unpack value)
     show (SymbolVal name          ) = printf "%s\n"      name
     show (LexError  msg           ) = printf "%-17s%s\n" "Error" msg
+
+instance Show Token where
+    show (Token val line column) = printf "%2d   %2d   %s" line column (show val)
 
 
 printTokens :: [Token] -> String
@@ -36,6 +41,28 @@ printTokens tokens =
 
 
 -- Tokenizers ----------------------------------------------------------------------------------------------------------
+makeToken :: Lexer Val -> Lexer Token
+makeToken lexer = do
+    (t, l, c) <- get
+    val <- lexer
+
+    case val of
+        Skip -> nextToken
+
+        LexError msg -> do
+            (_, l', c') <- get
+            let code = T.unpack $ T.take (c' - c + 1) t
+            let error_str = printf "(%d, %d): %s" l' c' code
+            let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
+
+            ch <- peek
+            unless (ch == '\0') $ advance 1
+
+            return $ Token (LexError str) l c
+
+        _ -> return $ Token val l c
+
+
 simpleToken :: String -> String -> Lexer Val
 simpleToken lexeme name = lit lexeme $> SymbolVal name
 
@@ -66,12 +93,8 @@ isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
 isIdEnd ch = isIdStart ch || isDigit ch
 
 identifier :: Lexer Val
-identifier = do
-    front <- one isIdStart
-    back <- many isIdEnd
-    let lexeme = T.cons front back
-
-    return $ TextVal "Identifier" lexeme
+identifier = TextVal "Identifier" <$> lexeme
+    where lexeme = T.cons <$> (one isIdStart) <*> (many isIdEnd)
 
 
 integer :: Lexer Val
@@ -137,7 +160,7 @@ skipComment = do
                       next_ch <- next
 
                       case next_ch of
-                          '/' -> do next; return None
+                          '/' -> do next; return Skip
                           _   -> loop next_ch
 
                   _    -> loop =<< next
@@ -199,10 +222,6 @@ withHandles in_handle out_handle f = do
 --                 input line column
 type LexerState = (Text, Int, Int)
 type Lexer = MaybeT (State LexerState)
-data Token = Token Val Int Int    -- value line column
-
-instance Show Token where
-    show (Token val line column) = printf "%2d   %2d   %s" line column (show val)
 
 
 lexerAdvance :: Int -> LexerState -> LexerState
@@ -230,9 +249,7 @@ lookahead n = gets $ \(t, _, _) -> T.unpack $ T.take n t
 
 
 next :: Lexer Char
-next = do
-    advance 1
-    return =<< peek
+next = advance 1 >> peek
 
 
 skipWhitespace :: Lexer ()
@@ -271,29 +288,6 @@ some f = do
     first <- one f
     rest <- many f
     return $ T.cons first rest
-
-
-makeToken :: Lexer Val -> Lexer Token
-makeToken lexer = do
-    (t, l, c) <- get
-    val <- lexer
-
-    case val of
-        None -> nextToken
-
-        LexError msg -> do
-            (_, l', c') <- get
-            ch <- peek
-
-            let code = T.unpack $ T.take (c' - c + 1) t
-            let error_str = printf "(%d, %d): %s" l' c' code
-
-            unless (ch == '\0') $ advance 1
-
-            let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
-            return $ Token (LexError str) l c
-
-        otherwise -> return $ Token val l c
 
 
 lex :: Lexer a -> String -> [a]
