@@ -214,8 +214,8 @@ withHandles in_handle out_handle f = do
 
     hPutStr out_handle $ f contents'
 
-    hClose in_handle
-    hClose out_handle
+    unless (in_handle == stdin) $ hClose in_handle
+    unless (out_handle == stdout) $ hClose out_handle
 
 
 -- Lexer ---------------------------------------------------------------------------------------------------------------
