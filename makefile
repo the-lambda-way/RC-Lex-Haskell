@@ -12,7 +12,7 @@ test: $(EXPECTED)
 
 $(EXPECTED): %.expected: %.t lex
 	@echo testing $<
-	@./lex < $< | diff -u --color $@ -
+	@./lex $< | diff -u --color $@ -
 
 clean:
 	rm *.hi *.o lex

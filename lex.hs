@@ -219,8 +219,7 @@ withHandles in_handle out_handle f = do
 
 
 -- Lexer ---------------------------------------------------------------------------------------------------------------
---                 input line column
-type LexerState = (Text, Int, Int)
+type LexerState = (Text, Int, Int)    -- input line column
 type Lexer = MaybeT (State LexerState)
 
 
