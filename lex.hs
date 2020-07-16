@@ -51,9 +51,9 @@ makeToken lexer = do
 
         LexError msg -> do
             (_, l', c') <- get
+
             let code = T.unpack $ T.take (c' - c + 1) t
-            let error_str = printf "(%d, %d): %s" l' c' code
-            let str = msg ++ "\n" ++ (replicate 27 ' ') ++ error_str
+            let str = printf "%s\n%s(%d, %d): %s" msg (replicate 27 ' ') l' c' code
 
             ch <- peek
             unless (ch == '\0') $ advance 1
