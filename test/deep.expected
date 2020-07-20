@@ -1,5 +1,5 @@
-Location  Token name       Value
--------------------------------------
+Location  Token name        Value
+--------------------------------------
  1    1   Keyword_print
  1    6   LeftParen
  1    7   Op_subtract
@@ -38,9 +38,9 @@ Location  Token name       Value
  1   40   Op_add
  1   41   Op_add
  1   42   Op_add
- 1   43   Integer          5
+ 1   43   Integer           5
  1   44   Comma
- 1   46   String           "\n"
+ 1   46   String            "\n"
  1   50   RightParen
  1   51   Semicolon
  2    1   Keyword_print
@@ -53,9 +53,9 @@ Location  Token name       Value
  2   12   LeftParen
  2   13   LeftParen
  2   14   LeftParen
- 2   15   Integer          3
+ 2   15   Integer           3
  2   17   Op_add
- 2   19   Integer          2
+ 2   19   Integer           2
  2   20   RightParen
  2   22   Op_multiply
  2   24   LeftParen
@@ -64,7 +64,7 @@ Location  Token name       Value
  2   27   LeftParen
  2   28   LeftParen
  2   29   LeftParen
- 2   30   Integer          2
+ 2   30   Integer           2
  2   31   RightParen
  2   32   RightParen
  2   33   RightParen
@@ -79,39 +79,39 @@ Location  Token name       Value
  2   42   RightParen
  2   43   RightParen
  2   44   Comma
- 2   46   String           "\n"
+ 2   46   String            "\n"
  2   50   RightParen
  2   51   Semicolon
  4    1   Keyword_if
  4    4   LeftParen
- 4    5   Integer          1
+ 4    5   Integer           1
  4    6   RightParen
  4    8   LeftBrace
  4   10   Keyword_if
  4   13   LeftParen
- 4   14   Integer          1
+ 4   14   Integer           1
  4   15   RightParen
  4   17   LeftBrace
  4   19   Keyword_if
  4   22   LeftParen
- 4   23   Integer          1
+ 4   23   Integer           1
  4   24   RightParen
  4   26   LeftBrace
  4   28   Keyword_if
  4   31   LeftParen
- 4   32   Integer          1
+ 4   32   Integer           1
  4   33   RightParen
  4   35   LeftBrace
  4   37   Keyword_if
  4   40   LeftParen
- 4   41   Integer          1
+ 4   41   Integer           1
  4   42   RightParen
  4   44   LeftBrace
  4   46   Keyword_print
  4   51   LeftParen
- 4   52   Integer          15
+ 4   52   Integer           15
  4   54   Comma
- 4   56   String           "\n"
+ 4   56   String            "\n"
  4   60   RightParen
  4   61   Semicolon
  4   63   RightBrace

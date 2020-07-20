@@ -23,11 +23,12 @@ data Token = Token Val Int Int    -- value line column
 
 
 instance Show Val where
-    show (IntVal             value) = printf "%-17s%d\n" "Integer" value
-    show (TextVal   "String" value) = printf "%-17s%s\n" "String" (show $ T.unpack value)    -- show escaped characters
-    show (TextVal   name     value) = printf "%-17s%s\n" name (T.unpack value)
+    show (IntVal             value) = printf "%-18s%d\n" "Integer" value
+    show (TextVal   "String" value) = printf "%-18s%s\n" "String" (show $ T.unpack value)    -- show escaped characters
+    show (TextVal   name     value) = printf "%-18s%s\n" name (T.unpack value)
     show (SymbolVal name          ) = printf "%s\n"      name
-    show (LexError  msg           ) = printf "%-17s%s\n" "Error" msg
+    show (LexError  msg           ) = printf "%-18s%s\n" "Error" msg
+    show Skip                       = printf ""
 
 instance Show Token where
     show (Token val line column) = printf "%2d   %2d   %s" line column (show val)
@@ -35,8 +36,8 @@ instance Show Token where
 
 printTokens :: [Token] -> String
 printTokens tokens =
-    "Location  Token name       Value\n"      ++
-    "-------------------------------------\n" ++
+    "Location  Token name        Value\n"      ++
+    "--------------------------------------\n" ++
     (concatMap show tokens)
 
 
@@ -71,11 +72,13 @@ makeTokenizers :: [(String, String)] -> Lexer Val
 makeTokenizers = asum . map (uncurry simpleToken)
 
 
+keywords :: Lexer Val
 keywords = makeTokenizers
     [("if",    "Keyword_if"),    ("else", "Keyword_else"), ("while", "Keyword_while"),
      ("print", "Keyword_print"), ("putc", "Keyword_putc")]
 
 
+operators :: Lexer Val
 operators = makeTokenizers
     [("*", "Op_multiply"), ("/",  "Op_divide"),    ("%",  "Op_mod"),      ("+", "Op_add"),
      ("-", "Op_subtract"), ("<=", "Op_lessequal"), ("<",  "Op_less"),     (">=", "Op_greaterequal"),
@@ -83,13 +86,17 @@ operators = makeTokenizers
      ("=", "Op_assign"),   ("&&", "Op_and"),       ("||", "Op_or")]
 
 
+symbols :: Lexer Val
 symbols = makeTokenizers
     [("(", "LeftParen"), (")", "RightParen"),
      ("{", "LeftBrace"), ("}", "RightBrace"),
      (";", "Semicolon"), (",", "Comma")]
 
 
+isIdStart :: Char -> Bool
 isIdStart ch = isAsciiLower ch || isAsciiUpper ch || ch == '_'
+
+isIdEnd :: Char -> Bool
 isIdEnd ch = isIdStart ch || isDigit ch
 
 identifier :: Lexer Val
@@ -182,6 +189,7 @@ nextToken = do
             <|> (return $ LexError "Unrecognized character.")
 
 
+main :: IO ()
 main = do
     args <- getArgs
     (hin, hout) <- getIOHandles args
@@ -201,7 +209,7 @@ getIOHandles [infile] = do
     inhandle <- openFile infile ReadMode
     return (inhandle, stdout)
 
-getIOHandles [infile, outfile] = do
+getIOHandles (infile : outfile : _) = do
     inhandle  <- openFile infile ReadMode
     outhandle <- openFile outfile WriteMode
     return (inhandle, outhandle)

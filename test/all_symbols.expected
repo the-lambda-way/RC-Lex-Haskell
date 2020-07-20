@@ -1,5 +1,5 @@
-Location  Token name       Value
--------------------------------------
+Location  Token name        Value
+--------------------------------------
  5   16   Keyword_print
  5   40   Op_subtract
  6   16   Keyword_putc
@@ -25,12 +25,12 @@ Location  Token name       Value
 16   16   Op_multiply
 16   40   Op_assign
 17   16   Op_divide
-17   40   Integer          42
+17   40   Integer           42
 18   16   Op_mod
-18   40   String           "String literal"
+18   40   String            "String literal"
 19   16   Op_add
-19   40   Identifier       variable_name
-20   26   Integer          10
-21   26   Integer          92
-22   26   Integer          32
+19   40   Identifier        variable_name
+20   26   Integer           10
+21   26   Integer           92
+22   26   Integer           32
 23    1   End_of_input
