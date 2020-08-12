@@ -1,6 +1,10 @@
 # RC-Lex-Haskell
 This is a lexer implementation for a simple, C-like language, created for Rosetta Code. See http://www.rosettacode.org/wiki/Compiler/lexical_analyzer.
 
+
+Direct link: http://www.rosettacode.org/wiki/Compiler/lexical_analyzer#Haskell
+
+
 # License
 Copyright (c) 2020 Mike Castillo
 

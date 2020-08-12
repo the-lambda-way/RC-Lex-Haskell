@@ -122,12 +122,12 @@ character = do
     str <- lookahead 3
 
     case str of
-        (ch : '\'' : _)    -> do advance 2; return $ IntVal (ord ch)
-        "\\n'"             -> do advance 3; return $ IntVal 10
-        "\\\\'"            -> do advance 3; return $ IntVal 92
-        ('\\' : ch : "\'") -> do advance 2; return $ LexError $ printf "Unknown escape sequence \\%c" ch
+        (ch : '\'' : _)    -> advance 2 $> IntVal (ord ch)
+        "\\n'"             -> advance 3 $> IntVal 10
+        "\\\\'"            -> advance 3 $> IntVal 92
+        ('\\' : ch : "\'") -> advance 2 $> LexError (printf "Unknown escape sequence \\%c" ch)
         ('\'' : _)         -> return $ LexError "Empty character constant"
-        _                  -> do advance 2; return $ LexError "Multi-character constant"
+        _                  -> advance 2 $> LexError "Multi-character constant"
 
 
 string :: Lexer Val
@@ -144,7 +144,7 @@ string = do
                           '\\' -> loop (T.snoc t '\\') =<< next
                           _    -> return $ LexError $ printf "Unknown escape sequence \\%c" next_ch
 
-                  '"' -> do next; return $ TextVal "String" t
+                  '"' -> next $> TextVal "String" t
 
                   '\n' -> return $ LexError $ "End-of-line while scanning string literal." ++
                                               " Closing string character not found before end-of-line."
@@ -167,7 +167,7 @@ skipComment = do
                       next_ch <- next
 
                       case next_ch of
-                          '/' -> do next; return Skip
+                          '/' -> next $> Skip
                           _   -> loop next_ch
 
                   _    -> loop =<< next
@@ -291,10 +291,7 @@ many f = state $ lexerMany f
 
 
 some :: (Char -> Bool) -> Lexer Text
-some f = do
-    first <- one f
-    rest <- many f
-    return $ T.cons first rest
+some f = T.cons <$> (one f) <*> (many f)
 
 
 lex :: Lexer a -> String -> [a]
